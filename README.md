@@ -140,10 +140,10 @@ python focus_sequencer.py --dry-run --temp 18.5
 If you have more than one ZWO EAF connected (e.g. main tube + guide tube),
 the ZWO ASCOM driver registers each unit under a different ProgID:
 
-| ProgID | Tube | Physical travel | Focus position |
-|---|---|---|---|
-| `ASCOM.EAF.Focuser` | First EAF — guide tube (50ED + ASI224MC) | 0 – 520 000 steps | ~335 000 steps |
-| `ASCOM.EAF_2.Focuser` | Second EAF — main tube (C8 + ASI2600MC Pro) | 0 – ~50 000 steps | ~25 000 steps |
+| ProgID | Tube | Firmware | Physical travel | Focus position |
+|---|---|---|---|---|
+| `ASCOM.EAF.Focuser` | First EAF — guide tube (50ED + ASI224MC) | 3.3.8C | 0 – 520 000 steps | ~335 000 steps |
+| `ASCOM.EAF_2.Focuser` | Second EAF — main tube (C8 + ASI2600MC Pro) | 3.3.8A | 0 – 64 264 steps *(post-reset configured range; physical end stops not yet verified)* | ~25 000 steps |
 
 > **Note:** The guide tube EAF (50ED) must have **Max Steps set to 520 000** in
 > ASICap → Focuser → Advanced. After a firmware update or power cycle that resets
