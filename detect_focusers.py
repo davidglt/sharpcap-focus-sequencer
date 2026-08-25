@@ -10,8 +10,9 @@ Probes known ZWO EAF ASCOM ProgIDs and prints the Name, Description,
 Position, and Temperature of each focuser that responds.
 
 The ZWO EAF ASCOM driver registers each connected unit as:
-    ASCOM.EAF_1.Focuser  (first unit)
+    ASCOM.EAF.Focuser    (first unit)
     ASCOM.EAF_2.Focuser  (second unit)
+    ASCOM.EAF_3.Focuser  (third unit)
     ...
 
 Useful when multiple EAF units are connected (e.g. main tube + guide tube)
@@ -22,20 +23,20 @@ Usage
 -----
     python detect_focusers.py
 
-Expected output example
------------------------
+Expected output example (two EAF units connected)
+-------------------------------------------------
     Probing ASCOM focuser ProgIDs...
 
-    [OK] ASCOM.EAF_1.Focuser
+    [OK] ASCOM.EAF.Focuser
          Name        : ZWO Focuser
          Description : ZWO EAF Focuser
-         Position    : 312,540 steps
+         Position    : 312,540 steps   <-- guide tube (50ED + ASI224MC)
          Temperature : 18.40 °C
 
     [OK] ASCOM.EAF_2.Focuser
          Name        : ZWO Focuser (2) - EAF(ASI2600)
          Description : ZWO EAF Focuser
-         Position    : 25,041 steps   <-- this is the main tube (C8 + ASI2600MC)
+         Position    : 25,041 steps    <-- main tube (C8 + ASI2600MC Pro)
          Temperature : 18.42 °C
 
     [--] ASCOM.EAF_3.Focuser  ->  could not connect (COM error)
@@ -54,9 +55,11 @@ import sys
 DEG_C = "\u00B0C"
 
 # Real ProgID scheme used by the ZWO EAF ASCOM driver:
-# each connected unit is registered as ASCOM.EAF_N.Focuser (1-based index).
+#   First unit  : ASCOM.EAF.Focuser   (no number suffix)
+#   Second unit : ASCOM.EAF_2.Focuser
+#   Third unit  : ASCOM.EAF_3.Focuser  ... and so on
 PROG_IDS = [
-    "ASCOM.EAF_1.Focuser",
+    "ASCOM.EAF.Focuser",
     "ASCOM.EAF_2.Focuser",
     "ASCOM.EAF_3.Focuser",
     "ASCOM.EAF_4.Focuser",
@@ -136,8 +139,8 @@ def main():
     print("-" * 52)
     print(f"Found {len(found)} focuser(s): {', '.join(found)}")
     print()
-    print("Tip: the main tube focuser (C8 + ASI2600MC) should have")
-    print("     a position around 25 000 steps.")
+    print("Tip: the main tube focuser (C8 + ASI2600MC Pro) should have")
+    print("     a position around 25 000 steps -> ASCOM.EAF_2.Focuser")
     print("     Use its ProgID as --ascom-id in focus_sequencer.py.")
 
 

@@ -21,11 +21,16 @@ Where:
     T_current  = current temperature read from the EAF sensor
     TCF        = temperature compensation factor (steps / °C)
 
+ASCOM ProgIDs (ZWO EAF driver)
+------------------------------
+    ASCOM.EAF.Focuser    -> first EAF  (guide tube: 50ED + ASI224MC,  ~300 000 steps)
+    ASCOM.EAF_2.Focuser  -> second EAF (main tube:  C8  + ASI2600MC Pro, ~25 000 steps)
+
 Usage
 -----
     python focus_sequencer.py
     python focus_sequencer.py --state-json path/to/sharpcap_focus_state.json
-    python focus_sequencer.py --ascom-id "ASCOM.ZWO.Focuser"
+    python focus_sequencer.py --ascom-id "ASCOM.EAF_2.Focuser"
     python focus_sequencer.py --dry-run
 
 Author
@@ -54,9 +59,10 @@ from pathlib import Path
 
 DEG_C = "\u00B0C"
 DEFAULT_STATE_JSON = "sharpcap_focus_state.json"
-DEFAULT_ASCOM_ID = "ASCOM.ZWO.Focuser"
-MOVE_TIMEOUT_S = 60        # Maximum seconds to wait for focuser to reach target
-MOVE_POLL_INTERVAL_S = 0.5 # Poll interval while waiting for move to complete
+# Main tube EAF (C8 + ASI2600MC Pro) — second unit registered by the ZWO ASCOM driver
+DEFAULT_ASCOM_ID = "ASCOM.EAF_2.Focuser"
+MOVE_TIMEOUT_S = 60
+MOVE_POLL_INTERVAL_S = 0.5
 
 
 def parse_arguments():
@@ -136,7 +142,7 @@ def load_state(state_json_path: Path) -> dict:
 def connect_focuser(ascom_id: str):
     """Connect to the ASCOM focuser and return the COM object."""
     try:
-        import win32com.client  # pywin32
+        import win32com.client
     except ImportError:
         raise ImportError(
             "pywin32 is required to use ASCOM on Windows.\n"
@@ -229,7 +235,7 @@ def main():
         except (ValueError, EOFError):
             print("Invalid input. Aborting dry run.")
             sys.exit(1)
-        current_position = focus_ref  # Assume at reference for dry run
+        current_position = focus_ref
     else:
         print(f"\nConnecting to ASCOM focuser: {args.ascom_id}")
         focuser = connect_focuser(args.ascom_id)
