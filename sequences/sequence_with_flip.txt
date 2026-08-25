@@ -14,6 +14,9 @@ SEQUENCE
     STOP AT 4 FROM MERIDIAN
         STOP AT 30 FROM HORIZON
             STOP AT 40 FROM HORIZON
+                PERIODIC ThermalCorrection EVERY 7 MINUTES
+                    RUN SCRIPT "C:\Users\davidglt\Desktop\sharpcap-focus-sequencer\run_focus.bat"
+                END PERIODIC
                 PERIODIC Refocus WHEN TEMP CHANGES BY 1
                     BEGIN GUIDING PAUSE
                         SET PLATESOLVE/FOCUS SETTINGS EXPOSURE 5
@@ -23,7 +26,6 @@ SEQUENCE
                 END PERIODIC
             END STOP AT
             GUIDING DITHER EVERY 2 FRAMES
-            RUN SCRIPT "C:\Users\davidglt\Desktop\sharpcap-focus-sequencer\run_focus.bat"
             CAPTURE 70 FRAMES REQUIREGUIDING True
             GUIDING DITHER EVERY STOP
         END STOP AT
@@ -41,11 +43,11 @@ SEQUENCE
     DELAY 30
     STOP AT 30 FROM HORIZON
         GUIDING DITHER EVERY 2 FRAMES
-        RUN SCRIPT "C:\Users\davidglt\Desktop\sharpcap-focus-sequencer\run_focus.bat"
         CAPTURE 120 FRAMES REQUIREGUIDING True
         GUIDING DITHER EVERY STOP
     END STOP AT
     GUIDING STOP
+    PERIODIC ThermalCorrection STOP
     PERIODIC Refocus STOP
     WARM UP TO 10 LIMIT 5 RATE 5 TOLERANCE 1
     SET COOLER OFF
