@@ -77,6 +77,22 @@ Dry-run mode
     of what the live run would do. Supply --temp to override the temperature
     read from the driver (useful when the EAF sensor is not connected).
 
+Logging
+-------
+    Each run appends to logs/YYYYMMDD_focus_sequencer.log (one file per day).
+    The logs/ directory is created automatically if it does not exist.
+    Log files are not committed to the repository (.gitignore).
+
+    Log line format:
+        YYYY-MM-DD HH:MM:SS | LEVEL | <message>
+
+    Levels used:
+        START  — beginning of each script execution with reference data
+        INFO   — successful correction with full details
+        SKIP   — correction skipped (focuser busy or below min-correction)
+        ERROR  — unexpected error
+        DRY    — dry-run execution (no move performed)
+
 Usage
 -----
     python focus_sequencer.py
@@ -87,7 +103,7 @@ Usage
     python focus_sequencer.py --backlash 500
     python focus_sequencer.py --backlash 0        # disable backlash compensation
     python focus_sequencer.py --min-correction 50 # backlash overshoot threshold
-    python focus_sequencer.py --min-correction 0  # always move in both directions
+    python focus_sequencer.py --min-correction 0  # always move regardless of direction
 
 Author
 ------
@@ -109,47 +125,81 @@ GPL-3.0-or-later
 
 import argparse
 import json
+import logging
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 DEG_C = "\u00B0C"
 STATE_JSON_FILENAME = "sharpcap_focus_state.json"
-# Route through ASCOM Device Hub so SharpCap and this script can connect simultaneously.
-# Device Hub must be configured to proxy ASCOM.EAF_2.Focuser (C8 + ASI2600MC Pro).
 DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
 DEFAULT_BACKLASH_STEPS = 500
 DEFAULT_MIN_CORRECTION = 50
 MOVE_TIMEOUT_S = 60
 MOVE_POLL_INTERVAL_S = 0.5
 
-# Candidate paths for state JSON auto-detection (evaluated in order when --state-json
-# is not supplied). Paths are relative to this script's own directory.
 _STATE_JSON_CANDIDATES = [
     Path(__file__).resolve().parent / STATE_JSON_FILENAME,
     Path(__file__).resolve().parent.parent / "sharpcap-focus-temperature" / STATE_JSON_FILENAME,
 ]
 
 
-def resolve_state_json(cli_path: str | None) -> Path:
-    """Return the resolved path to sharpcap_focus_state.json.
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
 
-    If *cli_path* is provided, use it directly (and raise if absent).
-    Otherwise try each candidate in _STATE_JSON_CANDIDATES and return the
-    first one that exists.  Raises FileNotFoundError if none is found.
+def setup_logging() -> logging.Logger:
+    """Configure and return the module logger.
+
+    Appends to logs/YYYYMMDD_focus_sequencer.log (created if absent).
+    Also streams to stdout so SharpCap's RUN output is visible.
     """
+    log_dir = Path(__file__).resolve().parent / "logs"
+    log_dir.mkdir(exist_ok=True)
+
+    log_filename = log_dir / f"{datetime.now().strftime('%Y%m%d')}_focus_sequencer.log"
+
+    fmt = "%(asctime)s | %(levelname)-5s | %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+
+    logger = logging.getLogger("focus_sequencer")
+    logger.setLevel(logging.DEBUG)
+
+    # File handler — append mode (creates file if absent)
+    fh = logging.FileHandler(log_filename, mode="a", encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+    logger.addHandler(fh)
+
+    # Console handler — same format
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.DEBUG)
+    ch.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+    logger.addHandler(ch)
+
+    return logger
+
+
+# Custom level names for the log file
+logging.addLevelName(logging.INFO, "INFO ")
+logging.addLevelName(logging.WARNING, "SKIP ")
+logging.addLevelName(logging.ERROR, "ERROR")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def resolve_state_json(cli_path: str | None) -> Path:
     if cli_path is not None:
         p = Path(cli_path).resolve()
         if not p.exists():
-            raise FileNotFoundError(
-                f"--state-json path not found: {p}"
-            )
+            raise FileNotFoundError(f"--state-json path not found: {p}")
         return p
-
     for candidate in _STATE_JSON_CANDIDATES:
         if candidate.exists():
             return candidate
-
     searched = "\n  ".join(str(c) for c in _STATE_JSON_CANDIDATES)
     raise FileNotFoundError(
         f"sharpcap_focus_state.json not found in any of:\n  {searched}\n"
@@ -158,7 +208,6 @@ def resolve_state_json(cli_path: str | None) -> Path:
 
 
 def parse_arguments():
-    """Parse and return command-line arguments."""
     parser = argparse.ArgumentParser(
         description=(
             "On-demand thermal focus compensator for ZWO EAF via ASCOM. "
@@ -166,326 +215,206 @@ def parse_arguments():
             "focuser to the thermally corrected position."
         )
     )
-    parser.add_argument(
-        "--state-json",
-        default=None,
-        help=(
-            "Path to sharpcap_focus_state.json produced by "
-            "sharpcap-focus-temperature. If omitted, the script searches "
-            "the local directory and then the sibling repository "
-            "sharpcap-focus-temperature automatically."
-        ),
-    )
-    parser.add_argument(
-        "--ascom-id",
-        default=DEFAULT_ASCOM_ID,
-        help=f"ASCOM ProgID of the focuser driver. Default: {DEFAULT_ASCOM_ID}",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help=(
-            "Connect to the ASCOM driver to read the real focuser position "
-            "and temperature, calculate the target, but do NOT move the "
-            "focuser and do NOT update the state JSON. "
-            "Use --temp to override the temperature read from the driver."
-        ),
-    )
-    parser.add_argument(
-        "--temp",
-        type=float,
-        default=None,
-        metavar="DEGREES",
-        help=(
-            f"Override the temperature (in {DEG_C}) read from the EAF sensor. "
-            "Useful in --dry-run when the sensor is not connected."
-        ),
-    )
-    parser.add_argument(
-        "--backlash",
-        type=int,
-        default=DEFAULT_BACKLASH_STEPS,
-        metavar="STEPS",
-        help=(
-            f"Backlash compensation in steps. The focuser always arrives at the "
-            f"target from below (increasing direction). If the target is below "
-            f"the current position, the script first moves to "
-            f"(target - backlash) and then back up to the target. "
-            f"Set to 0 to disable. Default: {DEFAULT_BACKLASH_STEPS}"
-        ),
-    )
-    parser.add_argument(
-        "--min-correction",
-        type=int,
-        default=DEFAULT_MIN_CORRECTION,
-        metavar="STEPS",
-        help=(
-            f"Minimum correction (in steps) required to trigger a move when a "
-            f"backlash overshoot would be needed (target < current position). "
-            f"Moves in the favourable direction (target >= current) are always "
-            f"applied regardless of size. "
-            f"Set to 0 to always move in both directions. Default: {DEFAULT_MIN_CORRECTION}"
-        ),
-    )
-    parser.add_argument(
-        "--move-timeout",
-        type=float,
-        default=MOVE_TIMEOUT_S,
-        help=f"Seconds to wait for each focuser move to complete. Default: {MOVE_TIMEOUT_S}",
-    )
+    parser.add_argument("--state-json", default=None)
+    parser.add_argument("--ascom-id", default=DEFAULT_ASCOM_ID)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--temp", type=float, default=None, metavar="DEGREES")
+    parser.add_argument("--backlash", type=int, default=DEFAULT_BACKLASH_STEPS, metavar="STEPS")
+    parser.add_argument("--min-correction", type=int, default=DEFAULT_MIN_CORRECTION, metavar="STEPS")
+    parser.add_argument("--move-timeout", type=float, default=MOVE_TIMEOUT_S)
     return parser.parse_args()
 
 
 def load_state(state_json_path: Path) -> dict:
-    """Load and validate the focus state JSON."""
     with state_json_path.open("r", encoding="utf-8") as handle:
         state = json.load(handle)
-
-    required = [
-        "focus_ref",
-        "temp_ref",
-        "model_tcf",
-        "last_temp_applied",
-        "last_focus_applied",
-    ]
+    required = ["focus_ref", "temp_ref", "model_tcf", "last_temp_applied", "last_focus_applied"]
     missing = [k for k in required if k not in state]
     if missing:
-        raise ValueError(
-            f"State JSON is missing required fields: {missing}\n"
-            "Re-run sharpcap_focuser.py to regenerate it."
-        )
-
+        raise ValueError(f"State JSON is missing required fields: {missing}")
     if state["model_tcf"] is None:
-        raise ValueError(
-            "model_tcf is null in the state JSON — not enough autofocus points "
-            "to fit the regression model. Collect more sessions and re-run "
-            "sharpcap_focuser.py."
-        )
-
+        raise ValueError("model_tcf is null in the state JSON.")
     return state
 
 
 def connect_focuser(ascom_id: str):
-    """Connect to the ASCOM focuser and return the COM object."""
     try:
         import win32com.client
     except ImportError:
-        raise ImportError(
-            "pywin32 is required to use ASCOM on Windows.\n"
-            "Install it with: pip install pywin32"
-        )
-
+        raise ImportError("pywin32 is required. Install with: pip install pywin32")
     focuser = win32com.client.Dispatch(ascom_id)
     focuser.Connected = True
-
     if not focuser.Connected:
         raise RuntimeError(f"Could not connect to ASCOM focuser: {ascom_id}")
-
     return focuser
 
 
 def check_not_busy(focuser) -> bool:
-    """Return True if the focuser is idle, False if it is already moving.
-
-    Called immediately after connect so we can abort cleanly if SharpCap
-    is running an autofocus or any other move at the same time.
-    """
     try:
         return not focuser.IsMoving
     except Exception:
-        # If IsMoving cannot be read, assume busy to be safe.
         return False
 
 
 def read_temperature(focuser) -> float:
-    """Read current temperature from the EAF external sensor via ASCOM."""
     try:
         temp = focuser.Temperature
     except Exception as exc:
-        raise RuntimeError(
-            f"Could not read temperature from focuser: {exc}\n"
-            "Check that the ZWO EAF external sensor is connected."
-        ) from exc
-
+        raise RuntimeError(f"Could not read temperature: {exc}") from exc
     if temp is None:
-        raise RuntimeError(
-            "Focuser returned None for Temperature. "
-            "Check that the ZWO EAF external sensor is plugged in."
-        )
-
+        raise RuntimeError("Focuser returned None for Temperature.")
     return float(temp)
 
 
 def read_position(focuser) -> int:
-    """Read current focuser position."""
     return int(focuser.Position)
 
 
 def move_focuser(focuser, target: int, timeout_s: float) -> int:
-    """Move focuser to target position and wait for completion."""
     focuser.Move(target)
-
     deadline = time.monotonic() + timeout_s
     while focuser.IsMoving:
         if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"Focuser did not reach position {target} within "
-                f"{timeout_s:.0f} s."
-            )
+            raise TimeoutError(f"Focuser did not reach position {target} within {timeout_s:.0f} s.")
         time.sleep(MOVE_POLL_INTERVAL_S)
-
     return int(focuser.Position)
 
 
 def move_focuser_with_backlash(
     focuser, target: int, current_position: int, backlash_steps: int, timeout_s: float
 ) -> int:
-    """Move focuser to target, always arriving from below to eliminate backlash.
-
-    Strategy:
-        - If target >= current_position: move directly (already approaching
-          from below or staying put).
-        - If target < current_position and backlash_steps > 0: first move to
-          (target - backlash_steps), then move up to target. This ensures the
-          final approach is always in the increasing (outward) direction.
-        - If backlash_steps == 0: move directly regardless of direction.
-
-    Returns the final focuser position after all moves.
-    """
     if backlash_steps > 0 and target < current_position:
-        overshoot = target - backlash_steps
-        overshoot = max(overshoot, 0)  # clamp to valid range
-        print(f"  Backlash overshoot   : moving to {overshoot} steps first...")
+        overshoot = max(target - backlash_steps, 0)
         move_focuser(focuser, overshoot, timeout_s)
-        print(f"  Overshoot reached. Moving up to target {target} steps...")
-    else:
-        print(f"  Approaching target {target} steps directly (no overshoot needed)...")
-
     return move_focuser(focuser, target, timeout_s)
 
 
 def save_state(state: dict, state_json_path: Path) -> None:
-    """Write the updated state back to the JSON file."""
     with state_json_path.open("w", encoding="utf-8") as handle:
         json.dump(state, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
-    """Run the on-demand thermal focus compensation."""
+    log = setup_logging()
     args = parse_arguments()
 
-    # --- Resolve state JSON path ---
-    state_json_path = resolve_state_json(args.state_json)
-    print(f"Loading state from: {state_json_path}")
-    state = load_state(state_json_path)
+    # --- Load state ---
+    try:
+        state_json_path = resolve_state_json(args.state_json)
+        state = load_state(state_json_path)
+    except (FileNotFoundError, ValueError) as exc:
+        log.error(str(exc))
+        sys.exit(1)
 
     focus_ref = int(state["focus_ref"])
     temp_ref = float(state["temp_ref"])
     tcf = float(state["model_tcf"])
-    last_temp = float(state["last_temp_applied"])
-    last_focus = int(state["last_focus_applied"])
     timestamp_ref = state.get("timestamp_ref", "unknown")
 
-    print(f"Reference autofocus  : {timestamp_ref}")
-    print(f"Reference position   : {focus_ref} steps @ {temp_ref:.2f} {DEG_C}")
-    print(f"Last applied         : {last_focus} steps @ {last_temp:.2f} {DEG_C}")
-    print(f"TCF                  : {tcf:.2f} steps/{DEG_C}")
-    print(f"Backlash             : {args.backlash} steps")
-    print(f"Min correction       : {args.min_correction} steps (backlash direction only)")
+    log.info(
+        f"START | ref={timestamp_ref} | focus_ref={focus_ref} | "
+        f"T_ref={temp_ref:.2f}{DEG_C} | TCF={tcf:.2f} | "
+        f"backlash={args.backlash} | min_correction={args.min_correction}"
+        + (" | DRY_RUN" if args.dry_run else "")
+    )
 
-    # --- Connect to ASCOM driver (both live and dry-run) ---
-    print(f"\nConnecting to ASCOM focuser: {args.ascom_id}")
-    focuser = connect_focuser(args.ascom_id)
-    print("Connected.")
+    # --- Connect ---
+    try:
+        focuser = connect_focuser(args.ascom_id)
+    except Exception as exc:
+        log.error(f"ASCOM connection failed: {exc}")
+        sys.exit(1)
 
-    # Abort immediately if SharpCap or any other client is already moving
-    # the focuser. The PERIODIC ThermalCorrection will retry in 7 minutes.
+    # --- Busy check ---
     if not check_not_busy(focuser):
-        print("Focuser is busy (IsMoving=True). Skipping this cycle — will retry in 7 min.")
+        log.warning("Focuser busy (IsMoving=True) — skipping this cycle, retry in 7 min")
         focuser.Connected = False
-        print("\nDone.")
         return
 
     current_position = read_position(focuser)
-    print(f"Current position     : {current_position} steps")
 
-    # Temperature: use --temp override if supplied, otherwise read from sensor.
-    if args.temp is not None:
-        t_current = args.temp
-        print(f"Temperature (--temp) : {t_current:.2f} {DEG_C}")
-    else:
-        t_current = read_temperature(focuser)
-        print(f"Current temperature  : {t_current:.2f} {DEG_C}")
-
-    if args.dry_run:
-        print("[DRY RUN] Position and temperature read from driver. Move will NOT be executed.")
+    # --- Temperature ---
+    try:
+        if args.temp is not None:
+            t_current = args.temp
+        else:
+            t_current = read_temperature(focuser)
+    except RuntimeError as exc:
+        log.error(str(exc))
+        focuser.Connected = False
+        sys.exit(1)
 
     # --- Calculate correction ---
     delta_t = t_current - temp_ref
-    delta_steps = tcf * delta_t
-    focus_target = round(focus_ref + delta_steps)
+    focus_target = round(focus_ref + tcf * delta_t)
     correction = focus_target - current_position
-
-    print(f"\nDelta T (current - ref) : {delta_t:+.2f} {DEG_C}")
-    print(f"Delta steps (TCF * dT)  : {delta_steps:+.1f}")
-    print(f"Target position         : {focus_target} steps")
-    print(f"Correction needed       : {correction:+d} steps")
-
-    # --- Check minimum correction threshold (backlash direction only) ---
-    # Moves in the favourable direction (target >= current) are always applied
-    # regardless of size to keep focus continuously corrected.
-    # The threshold only guards against unnecessary overshoot cycles.
     needs_backlash = args.backlash > 0 and focus_target < current_position
+
+    # --- No correction needed ---
     if correction == 0:
-        print("\nNo correction needed. Focuser already at target position.")
-        focuser.Connected = False
-        print("\nDone.")
-        return
-    if needs_backlash and abs(correction) < args.min_correction:
-        print(
-            f"\nCorrection ({abs(correction)} steps) is below "
-            f"--min-correction ({args.min_correction} steps) and requires backlash overshoot. "
-            "Skipping to avoid unnecessary double move."
+        log.info(
+            f"T={t_current:.2f}{DEG_C} | ΔT={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"pos={current_position} | correction=0 | backlash=False | final={current_position} | no move needed"
         )
         focuser.Connected = False
-        print("\nDone.")
         return
 
-    # --- Apply or report ---
-    if args.dry_run:
-        if needs_backlash:
-            overshoot = max(focus_target - args.backlash, 0)
-            print(
-                f"\n[DRY RUN] Would overshoot to {overshoot} steps, "
-                f"then move up to {focus_target} steps."
-            )
-        else:
-            print(f"\n[DRY RUN] Would move directly to {focus_target} steps.")
-        print("[DRY RUN] Move NOT executed. State JSON NOT updated.")
+    # --- Below min-correction threshold (backlash direction only) ---
+    if needs_backlash and abs(correction) < args.min_correction:
+        log.warning(
+            f"T={t_current:.2f}{DEG_C} | ΔT={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"pos={current_position} | correction={correction:+d} | "
+            f"below min_correction={args.min_correction} (backlash direction) — skipped"
+        )
         focuser.Connected = False
-    else:
-        print(f"\nMoving focuser to {focus_target} steps...")
+        return
+
+    # --- Dry run ---
+    if args.dry_run:
+        log.info(
+            f"DRY | T={t_current:.2f}{DEG_C} | ΔT={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"pos={current_position} | correction={correction:+d} | "
+            f"backlash={needs_backlash} | target={focus_target} | move NOT executed"
+        )
+        focuser.Connected = False
+        return
+
+    # --- Apply correction ---
+    try:
         final_position = move_focuser_with_backlash(
             focuser, focus_target, current_position, args.backlash, args.move_timeout
         )
-        print(f"Move complete. Final position: {final_position} steps")
-
-        if abs(final_position - focus_target) > 5:
-            print(
-                f"WARNING: Final position {final_position} differs from "
-                f"target {focus_target} by more than 5 steps."
-            )
-
-        # Update state JSON with current values
-        state["last_temp_applied"] = round(t_current, 2)
-        state["last_focus_applied"] = focus_target
-        save_state(state, state_json_path)
-        print(f"State JSON updated: {state_json_path}")
-
+    except (TimeoutError, Exception) as exc:
+        log.error(
+            f"T={t_current:.2f}{DEG_C} | pos={current_position} | "
+            f"target={focus_target} | move failed: {exc}"
+        )
         focuser.Connected = False
+        sys.exit(1)
 
-    print("\nDone.")
+    if abs(final_position - focus_target) > 5:
+        log.warning(
+            f"T={t_current:.2f}{DEG_C} | ΔT={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"pos={current_position} | correction={correction:+d} | backlash={needs_backlash} | "
+            f"final={final_position} | WARNING: differs from target {focus_target} by more than 5 steps"
+        )
+    else:
+        log.info(
+            f"T={t_current:.2f}{DEG_C} | ΔT={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"pos={current_position} | correction={correction:+d} | "
+            f"backlash={needs_backlash} | final={final_position}"
+        )
+
+    state["last_temp_applied"] = round(t_current, 2)
+    state["last_focus_applied"] = focus_target
+    save_state(state, state_json_path)
+
+    focuser.Connected = False
 
 
 if __name__ == "__main__":

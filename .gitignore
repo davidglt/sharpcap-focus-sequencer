@@ -17,6 +17,9 @@ env/
 # State file (runtime artifact — do not commit)
 sharpcap_focus_state.json
 
+# Logs (runtime artifacts — do not commit)
+logs/
+
 # OS
 .DS_Store
 Thumbs.db
