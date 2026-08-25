@@ -19,7 +19,7 @@ Where:
     focus_ref  = focuser position at the reference autofocus point
     T_ref      = temperature at the reference autofocus point
     T_current  = current temperature read from the EAF sensor
-    TCF        = temperature compensation factor (steps / ºC)
+    TCF        = temperature compensation factor (steps / C)
 
 Backlash compensation
 ---------------------
@@ -38,7 +38,7 @@ Minimum correction threshold
     When no backlash is needed (target >= current_position), the script
     always moves, even if the correction is tiny, to keep the focus
     continuously well-corrected without accumulating drift.
-    With TCF = -61.59 steps/ºC, 50 steps corresponds to ~0.81 ºC.
+    With TCF = -61.59 steps/C, 50 steps corresponds to ~0.81 C.
     Set to 0 to always move regardless of correction size or direction.
 
 Busy detection
@@ -101,8 +101,8 @@ Logging
                  pos=N/A when focuser could not be connected
 
     Example session (successful correction):
-        2026-08-25 23:14:00 | START | ref=2026-08-25T21:30:00 | focus_ref=24831 | T_ref=18.50ºC | TCF=-61.59 | last_focus=24831 | last_T=18.50ºC | backlash=500 | min_correction=50
-        2026-08-25 23:14:02 | INFO  | T=17.20ºC | ΔT=-1.30ºC | TCF=-61.59 | pos=24831 | correction=+80 | backlash=False | final=24911
+        2026-08-25 23:14:00 | START | ref=2026-08-25T21:30:00 | focus_ref=24831 | T_ref=18.50C | TCF=-61.59 | last_focus=24831 | last_T=18.50C | backlash=500 | min_correction=50
+        2026-08-25 23:14:02 | INFO  | T=17.20C | dT=-1.30C | TCF=-61.59 | pos=24831 | correction=+80 | backlash=False | final=24911
         2026-08-25 23:14:02 | END   | pos=24911 | reason=ok
 
     Example session (focuser busy):
@@ -112,7 +112,7 @@ Logging
 
     Example session (below min-correction):
         2026-08-25 23:28:00 | START | ...
-        2026-08-25 23:28:02 | SKIP  | T=17.10ºC | ΔT=-1.40ºC | correction=+12 | below min_correction=50 (backlash direction) — skipped
+        2026-08-25 23:28:02 | SKIP  | T=17.10C | dT=-1.40C | correction=+12 | below min_correction=50 (backlash direction) — skipped
         2026-08-25 23:28:02 | END   | pos=24911 | reason=min_correction
 
     Example session (ASCOM connection failure):
@@ -122,7 +122,7 @@ Logging
 
     Example session (move timeout):
         2026-08-25 23:42:00 | START | ...
-        2026-08-25 23:43:02 | ERROR | T=17.00ºC | pos=24911 | target=24991 | move failed: Focuser did not reach position 24991 within 60s
+        2026-08-25 23:43:02 | ERROR | T=17.00C | pos=24911 | target=24991 | move failed: Focuser did not reach position 24991 within 60s
         2026-08-25 23:43:02 | END   | pos=24911 | reason=error
 
     Example session (temperature sensor disconnected):
@@ -168,7 +168,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-DEG_C = "\u00BAC"  # ordinal masculine º (U+00BA) — renders correctly on Windows cp850/cp1252
+DEG_C = "C"  # plain ASCII — avoids cp850 mojibake when reading logs with 'type' on Windows cmd
+DELTA = "d"  # plain ASCII prefix for delta (dT instead of \u0394T)
 STATE_JSON_FILENAME = "sharpcap_focus_state.json"
 DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
 DEFAULT_BACKLASH_STEPS = 500
@@ -401,7 +402,7 @@ def main():
     # --- No correction needed ---
     if correction == 0:
         log.info(
-            f"T={t_current:.2f}{DEG_C} | \u0394T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"T={t_current:.2f}{DEG_C} | {DELTA}T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
             f"pos={current_position} | correction=0 | backlash=False | final={current_position} | no move needed"
         )
         log.info(f"END   | pos={current_position} | reason=ok")
@@ -411,7 +412,7 @@ def main():
     # --- Below min-correction threshold (backlash direction only) ---
     if needs_backlash and abs(correction) < args.min_correction:
         log.warning(
-            f"T={t_current:.2f}{DEG_C} | \u0394T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"T={t_current:.2f}{DEG_C} | {DELTA}T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
             f"pos={current_position} | correction={correction:+d} | "
             f"below min_correction={args.min_correction} (backlash direction) — skipped"
         )
@@ -422,7 +423,7 @@ def main():
     # --- Dry run ---
     if args.dry_run:
         log.info(
-            f"DRY | T={t_current:.2f}{DEG_C} | \u0394T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"DRY | T={t_current:.2f}{DEG_C} | {DELTA}T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
             f"pos={current_position} | correction={correction:+d} | "
             f"backlash={needs_backlash} | target={focus_target} | move NOT executed"
         )
@@ -446,14 +447,14 @@ def main():
 
     if abs(final_position - focus_target) > 5:
         log.warning(
-            f"T={t_current:.2f}{DEG_C} | \u0394T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"T={t_current:.2f}{DEG_C} | {DELTA}T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
             f"pos={current_position} | correction={correction:+d} | backlash={needs_backlash} | "
             f"final={final_position} | WARNING: differs from target {focus_target} by more than 5 steps"
         )
         log.info(f"END   | pos={final_position} | reason=ok_with_warning")
     else:
         log.info(
-            f"T={t_current:.2f}{DEG_C} | \u0394T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"T={t_current:.2f}{DEG_C} | {DELTA}T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
             f"pos={current_position} | correction={correction:+d} | "
             f"backlash={needs_backlash} | final={final_position}"
         )
