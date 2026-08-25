@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--min-correction` option: minimum correction in steps required to trigger a move
+  when a backlash overshoot would be needed (target < current position). Default: 50 steps
+  (~0.81 °C with TCF = −61.59 steps/°C). Set to `0` to always move in both directions.
+
+### Changed
+
+- Busy detection: the script now checks `IsMoving` immediately after connecting and
+  aborts cleanly if the focuser is already moving (e.g. SharpCap autofocus is running).
+  The next scheduled cycle retries automatically.
+- Minimum correction threshold (`--min-correction`) now applies **only** when a backlash
+  overshoot is needed (target < current position). Moves in the favourable direction
+  (target ≥ current, no overshoot) are always applied regardless of correction size,
+  keeping focus continuously corrected with small frequent adjustments.
+- Default `--min-correction` raised from 20 to 50 steps (~0.81 °C) to better match the
+  cost of a backlash overshoot cycle.
+- `--dry-run` now connects to the ASCOM driver and reads the real focuser `Position` and
+  `Temperature` instead of falling back to `last_focus_applied` from the state JSON.
+  The move and state JSON update are still skipped. Use `--temp` to override the sensor
+  reading for scenario simulation.
+
 ## [1.0.0] - 2026-08-25
 
 ### Added

@@ -24,10 +24,12 @@ focus_target = focus_ref + TCF × (T_current − T_ref)
 ## How it works
 
 1. Locates `sharpcap_focus_state.json` automatically (see [State JSON location](#state-json-location)).
-2. Connects to the ZWO EAF via ASCOM and reads the external temperature sensor.
-3. Calculates the thermally compensated target position.
-4. Moves the focuser to that position using backlash-compensated movement (always arrives from below).
-5. Updates `last_temp_applied` and `last_focus_applied` in the JSON state file.
+2. Connects to the ZWO EAF via ASCOM and reads the real focuser position and temperature.
+3. Aborts immediately if `IsMoving = True` (e.g. SharpCap autofocus is running) — the next scheduled cycle will retry.
+4. Calculates the thermally compensated target position.
+5. Skips the move if the correction is below `--min-correction` **and** a backlash overshoot would be needed; always moves if the target is in the favourable direction (no overshoot required).
+6. Moves the focuser to that position using backlash-compensated movement (always arrives from below).
+7. Updates `last_temp_applied` and `last_focus_applied` in the JSON state file.
 
 ## Two-repository workflow
 
@@ -113,13 +115,15 @@ Specify a custom ASCOM driver ID:
 python focus_sequencer.py --ascom-id "ASCOM.EAF_2.Focuser"
 ```
 
-Dry run (calculates and prints the target position without moving the focuser):
+Dry run (connects to the driver, reads real position and temperature, calculates
+the target, but does **not** move the focuser and does **not** update the state JSON):
 
 ```bash
 python focus_sequencer.py --dry-run
 ```
 
-Dry run with temperature supplied directly (non-interactive, useful for sequencer scripts):
+Dry run with temperature override (useful to simulate a specific temperature
+without relying on the EAF sensor reading):
 
 ```bash
 python focus_sequencer.py --dry-run --temp 18.5
@@ -132,15 +136,23 @@ python focus_sequencer.py --backlash 300
 python focus_sequencer.py --backlash 0   # disable backlash compensation
 ```
 
+Custom minimum correction threshold for backlash direction:
+
+```bash
+python focus_sequencer.py --min-correction 50   # default
+python focus_sequencer.py --min-correction 0    # always move in both directions
+```
+
 ## Command-line options
 
 | Option | Default | Description |
 |---|---|---|
 | `--state-json` | auto-detected | Path to the JSON state file produced by `sharpcap_focuser.py`. If omitted, searches local dir then sibling repository. |
 | `--ascom-id` | `ASCOM.DeviceHub.Focuser` | ASCOM ProgID of the focuser driver. |
-| `--dry-run` | off | Calculate target position without moving the focuser. |
-| `--temp` | (prompt) | Temperature in °C for `--dry-run` simulation. Skips interactive prompt. |
+| `--dry-run` | off | Connect to the driver, read real position and temperature, calculate the target, but do **not** move the focuser and do **not** update the state JSON. Use `--temp` to override the sensor reading. |
+| `--temp` | (from sensor) | Override the temperature read from the EAF sensor (°C). Useful with `--dry-run` to simulate a specific temperature. |
 | `--backlash` | `500` | Backlash compensation in steps. The focuser always arrives at the target from below; if the target is below the current position, it first overshoots to `(target − backlash)` then moves up. Set to `0` to disable. Measure your actual backlash and update this value accordingly. |
+| `--min-correction` | `50` | Minimum correction (steps) required to trigger a move **only when a backlash overshoot is needed** (target < current position). Moves in the favourable direction (target ≥ current) are always applied regardless of size. With TCF = −61.59 steps/°C, 50 steps ≈ 0.81 °C. Set to `0` to always move in both directions. |
 | `--move-timeout` | `60` | Seconds to wait for each focuser move to complete. |
 
 ## Backlash configuration
@@ -159,6 +171,37 @@ only one layer:
 > The script uses `--backlash 500` by default. Measure the real backlash of
 > your setup and update this value. Typical values for a well-adjusted EAF
 > on a C8 are 100–300 steps.
+
+## Busy detection
+
+The script checks `IsMoving` immediately after connecting. If the focuser is
+already moving (e.g. SharpCap is running an autofocus), the script prints a
+warning and exits cleanly without touching the focuser:
+
+```
+Focuser is busy (IsMoving=True). Skipping this cycle — will retry in 7 min.
+```
+
+The next scheduled execution (7 minutes later by default in the SharpCap
+sequencer) will retry normally.
+
+## Minimum correction threshold
+
+Small thermal corrections in the unfavourable direction (focuser must move
+**inward**, requiring a backlash overshoot) are skipped when the correction
+is smaller than `--min-correction`. This avoids unnecessary double moves
+(overshoot + return) for insignificant corrections.
+
+Corrections in the **favourable direction** (focuser moves **outward** — the
+normal direction during a cooling night) are **always applied**, regardless
+of size. This keeps the focus continuously well-corrected with small,
+frequent adjustments instead of accumulating drift.
+
+| `--min-correction` | Thermal equivalent (TCF = −61.59 steps/°C) | When to use |
+|---|---|---|
+| 20 | ~0.32 °C | Very sensitive, moves almost always |
+| **50** *(default)* | **~0.81 °C** | Balanced — recommended |
+| 100 | ~1.62 °C | Conservative, only large corrections |
 
 ## Multiple EAF units
 
@@ -235,7 +278,7 @@ printed to the console. Repeat for each EAF to map all connected units.
 2. Run `detect_focusers.py` once (with both EAFs connected) to identify the correct ProgID.
 3. In your nightly sequencer (NINA, SGP'Pro), add a **Script** step after each dither block.
 4. Point that script step to `focus_sequencer.py` — no extra arguments needed if both repos are sibling directories.
-5. The script auto-detects the state JSON, reads the current EAF temperature, calculates the correction, and moves the focuser.
+5. The script auto-detects the state JSON, reads the real EAF position and temperature, calculates the correction, and moves the focuser.
 6. When temperature drops 1 °C, trigger a full SharpCap autofocus; then re-run `sharpcap_focuser.py` to reset the reference.
 
 ## State JSON
