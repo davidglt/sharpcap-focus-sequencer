@@ -39,6 +39,12 @@ Minimum correction threshold
     ~0.32 °C of temperature change.
     Set to 0 to always move regardless of correction size.
 
+Busy detection
+--------------
+    If the focuser is already moving when the script connects (e.g. SharpCap
+    is running an autofocus), the script aborts immediately and exits cleanly.
+    The PERIODIC ThermalCorrection will retry in 7 minutes.
+
 ASCOM access
 ------------
     ASCOM Device Hub is required to allow simultaneous access from
@@ -266,6 +272,19 @@ def connect_focuser(ascom_id: str):
     return focuser
 
 
+def check_not_busy(focuser) -> bool:
+    """Return True if the focuser is idle, False if it is already moving.
+
+    Called immediately after connect so we can abort cleanly if SharpCap
+    is running an autofocus or any other move at the same time.
+    """
+    try:
+        return not focuser.IsMoving
+    except Exception:
+        # If IsMoving cannot be read, assume busy to be safe.
+        return False
+
+
 def read_temperature(focuser) -> float:
     """Read current temperature from the EAF external sensor via ASCOM."""
     try:
@@ -381,6 +400,14 @@ def main():
         print(f"\nConnecting to ASCOM focuser: {args.ascom_id}")
         focuser = connect_focuser(args.ascom_id)
         print("Connected.")
+
+        # Abort immediately if SharpCap or any other client is already moving
+        # the focuser. The PERIODIC ThermalCorrection will retry in 7 minutes.
+        if not check_not_busy(focuser):
+            print("Focuser is busy (IsMoving=True). Skipping this cycle — will retry in 7 min.")
+            focuser.Connected = False
+            print("\nDone.")
+            return
 
         t_current = read_temperature(focuser)
         current_position = read_position(focuser)
