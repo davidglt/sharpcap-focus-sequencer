@@ -155,7 +155,7 @@ only one layer:
 | SharpCap backlash | **0** | Disable — only affects SharpCap autofocus moves |
 | `--backlash` (this script) | **500** (default, adjust after measurement) | Script overshoots then approaches from below |
 
-> **Current configuration:** ASCOM driver backlash = 0, SharpCap backlash = 0.
+> **Current configuration:** ASCOM driver backlash = 0 (both EAFs), SharpCap backlash = 0.
 > The script uses `--backlash 500` by default. Measure the real backlash of
 > your setup and update this value. Typical values for a well-adjusted EAF
 > on a C8 are 100–300 steps.
@@ -165,10 +165,10 @@ only one layer:
 If you have more than one ZWO EAF connected (e.g. main tube + guide tube),
 the ZWO ASCOM driver registers each unit under a different ProgID:
 
-| ProgID | Tube | Firmware | Physical travel | Focus position |
-|---|---|---|---|---|
-| `ASCOM.EAF.Focuser` | First EAF — guide tube (50ED + ASI224MC) | 3.3.8C | 0 – 520 000 steps | ~335 000 steps |
-| `ASCOM.EAF_2.Focuser` | Second EAF — main tube (C8 + ASI2600MC Pro) | 3.3.8A | 0 – 64 264 steps *(post-reset configured range; physical end stops not yet verified)* | ~25 000 steps |
+| ProgID | Tube | Firmware | Physical travel | Focus position | Driver backlash |
+|---|---|---|---|---|---|
+| `ASCOM.EAF.Focuser` | First EAF — guide tube (50ED + ASI224MC) | 3.3.8C | 0 – 520 000 steps | ~335 000 steps | **0** |
+| `ASCOM.EAF_2.Focuser` | Second EAF — main tube (C8 + ASI2600MC Pro) | 3.3.8A | 0 – 64 264 steps *(post-reset configured range; physical end stops not yet verified)* | ~25 000 steps | **0** |
 
 > **Note:** The guide tube EAF (50ED) must have **Max Steps set to 520 000** in
 > ASICap → Focuser → Advanced. After a firmware update or power cycle that resets
