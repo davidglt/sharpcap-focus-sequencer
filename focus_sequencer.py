@@ -38,7 +38,7 @@ Minimum correction threshold
     When no backlash is needed (target >= current_position), the script
     always moves, even if the correction is tiny, to keep the focus
     continuously well-corrected without accumulating drift.
-    With TCF = -61.59 steps/°C, 20 steps corresponds to ~0.32 °C.
+    With TCF = -61.59 steps/°C, 50 steps corresponds to ~0.81 °C.
     Set to 0 to always move regardless of correction size or direction.
 
 Busy detection
@@ -78,7 +78,7 @@ Usage
     python focus_sequencer.py --dry-run --temp 18.5
     python focus_sequencer.py --backlash 500
     python focus_sequencer.py --backlash 0        # disable backlash compensation
-    python focus_sequencer.py --min-correction 20 # backlash overshoot threshold
+    python focus_sequencer.py --min-correction 50 # backlash overshoot threshold
     python focus_sequencer.py --min-correction 0  # always move in both directions
 
 Author
@@ -111,7 +111,7 @@ STATE_JSON_FILENAME = "sharpcap_focus_state.json"
 # Device Hub must be configured to proxy ASCOM.EAF_2.Focuser (C8 + ASI2600MC Pro).
 DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
 DEFAULT_BACKLASH_STEPS = 500
-DEFAULT_MIN_CORRECTION = 20
+DEFAULT_MIN_CORRECTION = 50
 MOVE_TIMEOUT_S = 60
 MOVE_POLL_INTERVAL_S = 0.5
 
