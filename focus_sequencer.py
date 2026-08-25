@@ -21,6 +21,15 @@ Where:
     T_current  = current temperature read from the EAF sensor
     TCF        = temperature compensation factor (steps / °C)
 
+Backlash compensation
+---------------------
+    To eliminate backlash, the focuser always arrives at the target
+    from below (increasing step numbers = outward direction on C8 + F/6.3).
+    If the target is below the current position, the script first moves
+    to (target - backlash_steps) and then moves up to the target.
+    The backlash value is configurable via --backlash (default: 500 steps).
+    Set to 0 to disable backlash compensation entirely.
+
 ASCOM access
 ------------
     ASCOM Device Hub is required to allow simultaneous access from
@@ -50,6 +59,8 @@ Usage
     python focus_sequencer.py --ascom-id "ASCOM.EAF_2.Focuser"
     python focus_sequencer.py --dry-run
     python focus_sequencer.py --dry-run --temp 18.5
+    python focus_sequencer.py --backlash 500
+    python focus_sequencer.py --backlash 0   # disable backlash compensation
 
 Author
 ------
@@ -80,6 +91,7 @@ STATE_JSON_FILENAME = "sharpcap_focus_state.json"
 # Route through ASCOM Device Hub so SharpCap and this script can connect simultaneously.
 # Device Hub must be configured to proxy ASCOM.EAF_2.Focuser (C8 + ASI2600MC Pro).
 DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
+DEFAULT_BACKLASH_STEPS = 500
 MOVE_TIMEOUT_S = 60
 MOVE_POLL_INTERVAL_S = 0.5
 
@@ -160,10 +172,23 @@ def parse_arguments():
         ),
     )
     parser.add_argument(
+        "--backlash",
+        type=int,
+        default=DEFAULT_BACKLASH_STEPS,
+        metavar="STEPS",
+        help=(
+            f"Backlash compensation in steps. The focuser always arrives at the "
+            f"target from below (increasing direction). If the target is below "
+            f"the current position, the script first moves to "
+            f"(target - backlash) and then back up to the target. "
+            f"Set to 0 to disable. Default: {DEFAULT_BACKLASH_STEPS}"
+        ),
+    )
+    parser.add_argument(
         "--move-timeout",
         type=float,
         default=MOVE_TIMEOUT_S,
-        help=f"Seconds to wait for the focuser move to complete. Default: {MOVE_TIMEOUT_S}",
+        help=f"Seconds to wait for each focuser move to complete. Default: {MOVE_TIMEOUT_S}",
     )
     return parser.parse_args()
 
@@ -256,6 +281,33 @@ def move_focuser(focuser, target: int, timeout_s: float) -> int:
     return int(focuser.Position)
 
 
+def move_focuser_with_backlash(
+    focuser, target: int, current_position: int, backlash_steps: int, timeout_s: float
+) -> int:
+    """Move focuser to target, always arriving from below to eliminate backlash.
+
+    Strategy:
+        - If target >= current_position: move directly (already approaching
+          from below or staying put).
+        - If target < current_position and backlash_steps > 0: first move to
+          (target - backlash_steps), then move up to target. This ensures the
+          final approach is always in the increasing (outward) direction.
+        - If backlash_steps == 0: move directly regardless of direction.
+
+    Returns the final focuser position after all moves.
+    """
+    if backlash_steps > 0 and target < current_position:
+        overshoot = target - backlash_steps
+        overshoot = max(overshoot, 0)  # clamp to valid range
+        print(f"  Backlash overshoot   : moving to {overshoot} steps first...")
+        move_focuser(focuser, overshoot, timeout_s)
+        print(f"  Overshoot reached. Moving up to target {target} steps...")
+    else:
+        print(f"  Approaching target {target} steps directly (no overshoot needed)...")
+
+    return move_focuser(focuser, target, timeout_s)
+
+
 def save_state(state: dict, state_json_path: Path) -> None:
     """Write the updated state back to the JSON file."""
     with state_json_path.open("w", encoding="utf-8") as handle:
@@ -283,6 +335,7 @@ def main():
     print(f"Reference position   : {focus_ref} steps @ {temp_ref:.2f} {DEG_C}")
     print(f"Last applied         : {last_focus} steps @ {last_temp:.2f} {DEG_C}")
     print(f"TCF                  : {tcf:.2f} steps/{DEG_C}")
+    print(f"Backlash             : {args.backlash} steps")
 
     # --- Connect and read temperature ---
     if args.dry_run:
@@ -321,13 +374,25 @@ def main():
 
     # --- Apply or report ---
     if args.dry_run:
-        print("\n[DRY RUN] Move NOT executed.")
+        if args.backlash > 0 and focus_target < current_position:
+            overshoot = max(focus_target - args.backlash, 0)
+            print(
+                f"\n[DRY RUN] Would overshoot to {overshoot} steps, "
+                f"then move up to {focus_target} steps."
+            )
+        elif correction != 0:
+            print(f"\n[DRY RUN] Would move directly to {focus_target} steps.")
+        else:
+            print("\n[DRY RUN] No correction needed.")
+        print("[DRY RUN] Move NOT executed.")
     else:
         if correction == 0:
             print("\nNo correction needed. Focuser already at target position.")
         else:
             print(f"\nMoving focuser to {focus_target} steps...")
-            final_position = move_focuser(focuser, focus_target, args.move_timeout)
+            final_position = move_focuser_with_backlash(
+                focuser, focus_target, current_position, args.backlash, args.move_timeout
+            )
             print(f"Move complete. Final position: {final_position} steps")
 
             if abs(final_position - focus_target) > 5:
