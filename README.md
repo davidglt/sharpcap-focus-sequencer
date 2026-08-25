@@ -119,6 +119,12 @@ Dry run (calculates and prints the target position without moving the focuser):
 python focus_sequencer.py --dry-run
 ```
 
+Dry run with temperature supplied directly (non-interactive, useful for sequencer scripts):
+
+```bash
+python focus_sequencer.py --dry-run --temp 18.5
+```
+
 ## Command-line options
 
 | Option | Default | Description |
@@ -126,6 +132,7 @@ python focus_sequencer.py --dry-run
 | `--state-json` | auto-detected | Path to the JSON state file produced by `sharpcap_focuser.py`. If omitted, searches local dir then sibling repository. |
 | `--ascom-id` | `ASCOM.DeviceHub.Focuser` | ASCOM ProgID of the focuser driver. |
 | `--dry-run` | off | Calculate target position without moving the focuser. |
+| `--temp` | (prompt) | Temperature in °C for `--dry-run` simulation. Skips interactive prompt. |
 | `--move-timeout` | `60` | Seconds to wait for the focuser move to complete. |
 
 ## Multiple EAF units
@@ -135,7 +142,7 @@ the ZWO ASCOM driver registers each unit under a different ProgID:
 
 | ProgID | Tube | Position range |
 |---|---|---|
-| `ASCOM.EAF.Focuser` | First EAF — guide tube (50ED + ASI224MC) | ~300 000 steps |
+| `ASCOM.EAF.Focuser` | First EAF — guide tube (50ED + ASI224MC) | ~335 000 steps |
 | `ASCOM.EAF_2.Focuser` | Second EAF — main tube (C8 + ASI2600MC Pro) | ~25 000 steps |
 
 ### Identifying ProgIDs with detect_focusers.py
@@ -154,15 +161,15 @@ Probing ASCOM focuser ProgIDs...
 
 [OK] ASCOM.EAF.Focuser
      Name        : ZWO Focuser
-     Description : ZWO EAF Focuser
-     Position    : 312,540 steps
-     Temperature : 18.40 °C
+     Description : ZWO Focuser (1)
+     Position    : 335,675 steps
+     Temperature : 26.60 °C
 
 [OK] ASCOM.EAF_2.Focuser
-     Name        : ZWO Focuser (2) - EAF(ASI2600)
-     Description : ZWO EAF Focuser
-     Position    : 25,041 steps    <-- main tube
-     Temperature : 18.42 °C
+     Name        : ZWO Focuser
+     Description : ZWO Focuser (2)
+     Position    : 25,018 steps    <-- main tube
+     Temperature : 27.16 °C
 ```
 
 ### Identifying ProgIDs with the ASCOM Chooser (alternative)

@@ -29,7 +29,7 @@ ASCOM access
     and point both clients to ASCOM.DeviceHub.Focuser.
 
     Direct ProgIDs (ZWO EAF driver, single-client only):
-        ASCOM.EAF.Focuser    -> first EAF  (guide tube: 50ED + ASI224MC,  ~300 000 steps)
+        ASCOM.EAF.Focuser    -> first EAF  (guide tube: 50ED + ASI224MC,  ~335 000 steps)
         ASCOM.EAF_2.Focuser  -> second EAF (main tube:  C8  + ASI2600MC Pro, ~25 000 steps)
 
 State JSON lookup
