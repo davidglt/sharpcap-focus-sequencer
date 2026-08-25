@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# SPDX-FileCopyrightText: 2026 David González López-Tercero <davidglt@dragonit.es>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""
+detect_focusers.py — ASCOM focuser detection utility.
+
+Probes common ZWO EAF ASCOM ProgIDs and prints the Name, Description,
+and current Position of each focuser that responds.
+
+Useful when multiple EAF units are connected (e.g. main tube + guide tube)
+to identify which ProgID corresponds to each focuser before configuring
+focus_sequencer.py.
+
+Usage
+-----
+    python detect_focusers.py
+
+Expected output example
+-----------------------
+    Probing ASCOM focuser ProgIDs...
+
+    [OK] ASCOM.ZWO.Focuser
+         Name        : ZWO Focuser
+         Description : ZWO EAF Focuser
+         Position    : 312540 steps
+         Temperature : 18.40 °C
+
+    [OK] ASCOM.ZWO.Focuser1
+         Name        : ZWO Focuser (2)
+         Description : ZWO EAF Focuser
+         Position    : 25041 steps   <-- this is the main tube (C8 + ASI2600MC)
+         Temperature : 18.42 °C
+
+    [--] ASCOM.ZWO.Focuser2  ->  could not connect (COM error)
+
+Author
+------
+David González López-Tercero
+
+License
+-------
+GPL-3.0-or-later
+"""
+
+import sys
+
+DEG_C = "\u00B0C"
+
+# ProgIDs to probe — ZWO driver registers up to Focuser9 for multiple units
+PROG_IDS = [
+    "ASCOM.ZWO.Focuser",
+    "ASCOM.ZWO.Focuser1",
+    "ASCOM.ZWO.Focuser2",
+    "ASCOM.ZWO.Focuser3",
+    "ASCOM.ZWO.Focuser4",
+]
+
+
+def probe_focuser(prog_id: str) -> dict | None:
+    """Try to connect to a focuser and return its properties, or None on failure."""
+    try:
+        import win32com.client
+    except ImportError:
+        print(
+            "ERROR: pywin32 is not installed.\n"
+            "Install it with: pip install pywin32"
+        )
+        sys.exit(1)
+
+    try:
+        focuser = win32com.client.Dispatch(prog_id)
+        focuser.Connected = True
+
+        name = getattr(focuser, "Name", "(unknown)")
+        description = getattr(focuser, "Description", "(unknown)")
+        position = getattr(focuser, "Position", None)
+        temperature = getattr(focuser, "Temperature", None)
+
+        focuser.Connected = False
+
+        return {
+            "name": name,
+            "description": description,
+            "position": int(position) if position is not None else None,
+            "temperature": float(temperature) if temperature is not None else None,
+        }
+
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def main():
+    """Probe all known ZWO EAF ProgIDs and report results."""
+    print("Probing ASCOM focuser ProgIDs...\n")
+
+    found = []
+    for prog_id in PROG_IDS:
+        result = probe_focuser(prog_id)
+
+        if "error" in result:
+            print(f"[--] {prog_id}  ->  could not connect ({result['error']})")
+        else:
+            found.append(prog_id)
+            pos_str = f"{result['position']:,} steps" if result["position"] is not None else "(unavailable)"
+            temp_str = (
+                f"{result['temperature']:.2f} {DEG_C}"
+                if result["temperature"] is not None
+                else "(unavailable)"
+            )
+            print(f"[OK] {prog_id}")
+            print(f"     Name        : {result['name']}")
+            print(f"     Description : {result['description']}")
+            print(f"     Position    : {pos_str}")
+            print(f"     Temperature : {temp_str}")
+        print()
+
+    if not found:
+        print(
+            "No focusers found. Make sure the ZWO EAF units are connected\n"
+            "and the ASCOM driver is installed."
+        )
+        sys.exit(1)
+
+    print("-" * 52)
+    print(f"Found {len(found)} focuser(s): {', '.join(found)}")
+    print()
+    print("Tip: the main tube focuser (C8 + ASI2600MC) should have")
+    print("     a position around 25 000 steps.")
+    print("     Use its ProgID as --ascom-id in focus_sequencer.py.")
+
+
+if __name__ == "__main__":
+    main()
