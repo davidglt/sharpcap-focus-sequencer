@@ -69,6 +69,14 @@ State JSON lookup
     NOT be copied into this repository; always use the original output
     from the producer repository (single source of truth).
 
+Dry-run mode
+------------
+    In --dry-run mode the script connects to the ASCOM driver to read the
+    real focuser position and temperature, but does NOT move the focuser
+    and does NOT update the state JSON. This gives an accurate simulation
+    of what the live run would do. Supply --temp to override the temperature
+    read from the driver (useful when the EAF sensor is not connected).
+
 Usage
 -----
     python focus_sequencer.py
@@ -177,8 +185,10 @@ def parse_arguments():
         "--dry-run",
         action="store_true",
         help=(
-            "Calculate and print the target position without moving the "
-            "focuser or writing the state JSON."
+            "Connect to the ASCOM driver to read the real focuser position "
+            "and temperature, calculate the target, but do NOT move the "
+            "focuser and do NOT update the state JSON. "
+            "Use --temp to override the temperature read from the driver."
         ),
     )
     parser.add_argument(
@@ -187,8 +197,8 @@ def parse_arguments():
         default=None,
         metavar="DEGREES",
         help=(
-            f"Current temperature in {DEG_C} for --dry-run simulation. "
-            "If omitted in dry-run mode, the script prompts interactively."
+            f"Override the temperature (in {DEG_C}) read from the EAF sensor. "
+            "Useful in --dry-run when the sensor is not connected."
         ),
     )
     parser.add_argument(
@@ -384,37 +394,32 @@ def main():
     print(f"Backlash             : {args.backlash} steps")
     print(f"Min correction       : {args.min_correction} steps (backlash direction only)")
 
-    # --- Connect and read temperature ---
-    if args.dry_run:
-        print("\n[DRY RUN] Skipping ASCOM connection.")
-        if args.temp is not None:
-            t_current = args.temp
-            print(f"Temperature (--temp) : {t_current:.2f} {DEG_C}")
-        else:
-            print("Enter current temperature manually for simulation:")
-            try:
-                t_current = float(input(f"  Temperature ({DEG_C}): "))
-            except (ValueError, EOFError):
-                print("Invalid input. Use --temp <value> for non-interactive dry-run.")
-                sys.exit(1)
-        current_position = last_focus
+    # --- Connect to ASCOM driver (both live and dry-run) ---
+    print(f"\nConnecting to ASCOM focuser: {args.ascom_id}")
+    focuser = connect_focuser(args.ascom_id)
+    print("Connected.")
+
+    # Abort immediately if SharpCap or any other client is already moving
+    # the focuser. The PERIODIC ThermalCorrection will retry in 7 minutes.
+    if not check_not_busy(focuser):
+        print("Focuser is busy (IsMoving=True). Skipping this cycle — will retry in 7 min.")
+        focuser.Connected = False
+        print("\nDone.")
+        return
+
+    current_position = read_position(focuser)
+    print(f"Current position     : {current_position} steps")
+
+    # Temperature: use --temp override if supplied, otherwise read from sensor.
+    if args.temp is not None:
+        t_current = args.temp
+        print(f"Temperature (--temp) : {t_current:.2f} {DEG_C}")
     else:
-        print(f"\nConnecting to ASCOM focuser: {args.ascom_id}")
-        focuser = connect_focuser(args.ascom_id)
-        print("Connected.")
-
-        # Abort immediately if SharpCap or any other client is already moving
-        # the focuser. The PERIODIC ThermalCorrection will retry in 7 minutes.
-        if not check_not_busy(focuser):
-            print("Focuser is busy (IsMoving=True). Skipping this cycle — will retry in 7 min.")
-            focuser.Connected = False
-            print("\nDone.")
-            return
-
         t_current = read_temperature(focuser)
-        current_position = read_position(focuser)
         print(f"Current temperature  : {t_current:.2f} {DEG_C}")
-        print(f"Current position     : {current_position} steps")
+
+    if args.dry_run:
+        print("[DRY RUN] Position and temperature read from driver. Move will NOT be executed.")
 
     # --- Calculate correction ---
     delta_t = t_current - temp_ref
@@ -434,8 +439,7 @@ def main():
     needs_backlash = args.backlash > 0 and focus_target < current_position
     if correction == 0:
         print("\nNo correction needed. Focuser already at target position.")
-        if not args.dry_run:
-            focuser.Connected = False
+        focuser.Connected = False
         print("\nDone.")
         return
     if needs_backlash and abs(correction) < args.min_correction:
@@ -444,8 +448,7 @@ def main():
             f"--min-correction ({args.min_correction} steps) and requires backlash overshoot. "
             "Skipping to avoid unnecessary double move."
         )
-        if not args.dry_run:
-            focuser.Connected = False
+        focuser.Connected = False
         print("\nDone.")
         return
 
@@ -459,7 +462,8 @@ def main():
             )
         else:
             print(f"\n[DRY RUN] Would move directly to {focus_target} steps.")
-        print("[DRY RUN] Move NOT executed.")
+        print("[DRY RUN] Move NOT executed. State JSON NOT updated.")
+        focuser.Connected = False
     else:
         print(f"\nMoving focuser to {focus_target} steps...")
         final_position = move_focuser_with_backlash(
