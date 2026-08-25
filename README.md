@@ -26,7 +26,7 @@ focus_target = focus_ref + TCF × (T_current − T_ref)
 1. Locates `sharpcap_focus_state.json` automatically (see [State JSON location](#state-json-location)).
 2. Connects to the ZWO EAF via ASCOM and reads the external temperature sensor.
 3. Calculates the thermally compensated target position.
-4. Moves the focuser to that position.
+4. Moves the focuser to that position using backlash-compensated movement (always arrives from below).
 5. Updates `last_temp_applied` and `last_focus_applied` in the JSON state file.
 
 ## Two-repository workflow
@@ -125,6 +125,13 @@ Dry run with temperature supplied directly (non-interactive, useful for sequence
 python focus_sequencer.py --dry-run --temp 18.5
 ```
 
+Custom backlash value (or disable entirely):
+
+```bash
+python focus_sequencer.py --backlash 300
+python focus_sequencer.py --backlash 0   # disable backlash compensation
+```
+
 ## Command-line options
 
 | Option | Default | Description |
@@ -133,7 +140,25 @@ python focus_sequencer.py --dry-run --temp 18.5
 | `--ascom-id` | `ASCOM.DeviceHub.Focuser` | ASCOM ProgID of the focuser driver. |
 | `--dry-run` | off | Calculate target position without moving the focuser. |
 | `--temp` | (prompt) | Temperature in °C for `--dry-run` simulation. Skips interactive prompt. |
-| `--move-timeout` | `60` | Seconds to wait for the focuser move to complete. |
+| `--backlash` | `500` | Backlash compensation in steps. The focuser always arrives at the target from below; if the target is below the current position, it first overshoots to `(target − backlash)` then moves up. Set to `0` to disable. Measure your actual backlash and update this value accordingly. |
+| `--move-timeout` | `60` | Seconds to wait for each focuser move to complete. |
+
+## Backlash configuration
+
+The ZWO EAF ASCOM driver includes a built-in backlash setting, and SharpCap
+also has its own backlash compensation. To avoid double-compensation, use
+only one layer:
+
+| Layer | Recommended setting | Notes |
+|---|---|---|
+| ZWO EAF ASCOM driver | **0** | Disable — let the script handle it |
+| SharpCap backlash | **0** | Disable — only affects SharpCap autofocus moves |
+| `--backlash` (this script) | **500** (default, adjust after measurement) | Script overshoots then approaches from below |
+
+> **Current configuration:** ASCOM driver backlash = 0, SharpCap backlash = 0.
+> The script uses `--backlash 500` by default. Measure the real backlash of
+> your setup and update this value. Typical values for a well-adjusted EAF
+> on a C8 are 100–300 steps.
 
 ## Multiple EAF units
 
