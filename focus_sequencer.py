@@ -19,7 +19,7 @@ Where:
     focus_ref  = focuser position at the reference autofocus point
     T_ref      = temperature at the reference autofocus point
     T_current  = current temperature read from the EAF sensor
-    TCF        = temperature compensation factor (steps / °C)
+    TCF        = temperature compensation factor (steps / ºC)
 
 Backlash compensation
 ---------------------
@@ -38,7 +38,7 @@ Minimum correction threshold
     When no backlash is needed (target >= current_position), the script
     always moves, even if the correction is tiny, to keep the focus
     continuously well-corrected without accumulating drift.
-    With TCF = -61.59 steps/°C, 50 steps corresponds to ~0.81 °C.
+    With TCF = -61.59 steps/ºC, 50 steps corresponds to ~0.81 ºC.
     Set to 0 to always move regardless of correction size or direction.
 
 Busy detection
@@ -101,8 +101,8 @@ Logging
                  pos=N/A when focuser could not be connected
 
     Example session (successful correction):
-        2026-08-25 23:14:00 | START | ref=2026-08-25T21:30:00 | focus_ref=24831 | T_ref=18.50°C | TCF=-61.59 | last_focus=24831 | last_T=18.50°C | backlash=500 | min_correction=50
-        2026-08-25 23:14:02 | INFO  | T=17.20°C | ΔT=-1.30°C | TCF=-61.59 | pos=24831 | correction=+80 | backlash=False | final=24911
+        2026-08-25 23:14:00 | START | ref=2026-08-25T21:30:00 | focus_ref=24831 | T_ref=18.50ºC | TCF=-61.59 | last_focus=24831 | last_T=18.50ºC | backlash=500 | min_correction=50
+        2026-08-25 23:14:02 | INFO  | T=17.20ºC | ΔT=-1.30ºC | TCF=-61.59 | pos=24831 | correction=+80 | backlash=False | final=24911
         2026-08-25 23:14:02 | END   | pos=24911 | reason=ok
 
     Example session (focuser busy):
@@ -112,7 +112,7 @@ Logging
 
     Example session (below min-correction):
         2026-08-25 23:28:00 | START | ...
-        2026-08-25 23:28:02 | SKIP  | T=17.10°C | ΔT=-1.40°C | correction=+12 | below min_correction=50 (backlash direction) — skipped
+        2026-08-25 23:28:02 | SKIP  | T=17.10ºC | ΔT=-1.40ºC | correction=+12 | below min_correction=50 (backlash direction) — skipped
         2026-08-25 23:28:02 | END   | pos=24911 | reason=min_correction
 
     Example session (ASCOM connection failure):
@@ -122,7 +122,7 @@ Logging
 
     Example session (move timeout):
         2026-08-25 23:42:00 | START | ...
-        2026-08-25 23:43:02 | ERROR | T=17.00°C | pos=24911 | target=24991 | move failed: Focuser did not reach position 24991 within 60s
+        2026-08-25 23:43:02 | ERROR | T=17.00ºC | pos=24911 | target=24991 | move failed: Focuser did not reach position 24991 within 60s
         2026-08-25 23:43:02 | END   | pos=24911 | reason=error
 
     Example session (temperature sensor disconnected):
@@ -168,7 +168,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-DEG_C = "\u00B0C"
+DEG_C = "\u00BAC"  # ordinal masculine º (U+00BA) — renders correctly on Windows cp850/cp1252
 STATE_JSON_FILENAME = "sharpcap_focus_state.json"
 DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
 DEFAULT_BACKLASH_STEPS = 500
@@ -347,14 +347,14 @@ def main():
         log.info("END   | pos=N/A | reason=error")
         sys.exit(1)
 
-    focus_ref       = int(state["focus_ref"])
-    temp_ref        = float(state["temp_ref"])
-    tcf             = float(state["model_tcf"])
-    timestamp_ref   = state.get("timestamp_ref", "unknown")
-    last_focus      = state.get("last_focus_applied", "unknown")
-    last_t          = state.get("last_temp_applied", "unknown")
+    focus_ref     = int(state["focus_ref"])
+    temp_ref      = float(state["temp_ref"])
+    tcf           = float(state["model_tcf"])
+    timestamp_ref = state.get("timestamp_ref", "unknown")
+    last_focus    = state.get("last_focus_applied", "unknown")
+    last_t        = state.get("last_temp_applied", "unknown")
 
-    last_t_str  = f"{last_t:.2f}{DEG_C}" if isinstance(last_t, float) else str(last_t)
+    last_t_str = f"{last_t:.2f}{DEG_C}" if isinstance(last_t, float) else str(last_t)
 
     log.info(
         f"START | ref={timestamp_ref} | focus_ref={focus_ref} | "
@@ -393,9 +393,9 @@ def main():
         sys.exit(1)
 
     # --- Calculate correction ---
-    delta_t      = t_current - temp_ref
-    focus_target = round(focus_ref + tcf * delta_t)
-    correction   = focus_target - current_position
+    delta_t        = t_current - temp_ref
+    focus_target   = round(focus_ref + tcf * delta_t)
+    correction     = focus_target - current_position
     needs_backlash = args.backlash > 0 and focus_target < current_position
 
     # --- No correction needed ---
