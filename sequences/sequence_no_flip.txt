@@ -5,18 +5,23 @@ SEQUENCE
     LOAD PROFILE Secuence_ASI2600MC_180s_100_4176x4176
     FRAMETYPE Light
     FOCUSER CONNECT
+    LOG "Thermal correction: starting run_focus.bat"
     RUN C:\Users\davidglt\Desktop\sharpcap-focus-sequencer\run_focus.bat WITH PARAMS "" WAIT True
-    PERIODIC sharpcap-focus-sequencer EVERY 420
-        LOG "Thermal correction: starting run_focus.bat"
-        RUN C:\Users\davidglt\Desktop\sharpcap-focus-sequencer\run_focus.bat WITH PARAMS "" WAIT True
-        LOG "Thermal correction: finished run_focus.bat"
-    END PERIODIC
+    LOG "Thermal correction: finished run_focus.bat"
     GUIDING CONNECT
     BEGIN GUIDING PAUSE
         SET PLATESOLVE/FOCUS SETTINGS EXPOSURE 5
             AUTOFOCUS OFFSET -200 TO 200 STEP COUNT 16 BACKLASH 500
         END SET
     END GUIDING PAUSE
+    LOG "Thermal correction: starting run_focus.bat"
+    RUN C:\Users\davidglt\Desktop\sharpcap-focus-sequencer\run_focus.bat WITH PARAMS "" WAIT True
+    LOG "Thermal correction: finished run_focus.bat"
+    PERIODIC sharpcap-focus-sequencer EVERY 420
+        LOG "Thermal correction: starting run_focus.bat"
+        RUN C:\Users\davidglt\Desktop\sharpcap-focus-sequencer\run_focus.bat WITH PARAMS "" WAIT True
+        LOG "Thermal correction: finished run_focus.bat"
+    END PERIODIC
     STOP AT 4 FROM MERIDIAN
         STOP AT 30 FROM HORIZON
             STOP AT 40 FROM HORIZON
