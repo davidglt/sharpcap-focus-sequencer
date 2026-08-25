@@ -32,12 +32,14 @@ Backlash compensation
 
 Minimum correction threshold
 -----------------------------
-    The script skips the move if the absolute correction is smaller than
-    --min-correction (default: 20 steps). This avoids unnecessary motor
-    activity and backlash overshoot cycles when the thermal drift is
-    negligible. With TCF = -61.59 steps/°C, 20 steps corresponds to
-    ~0.32 °C of temperature change.
-    Set to 0 to always move regardless of correction size.
+    The --min-correction threshold applies ONLY when a backlash overshoot
+    would be needed (target < current_position). In that case, a small
+    correction is not worth the cost of a double move (overshoot + return).
+    When no backlash is needed (target >= current_position), the script
+    always moves, even if the correction is tiny, to keep the focus
+    continuously well-corrected without accumulating drift.
+    With TCF = -61.59 steps/°C, 20 steps corresponds to ~0.32 °C.
+    Set to 0 to always move regardless of correction size or direction.
 
 Busy detection
 --------------
@@ -76,8 +78,8 @@ Usage
     python focus_sequencer.py --dry-run --temp 18.5
     python focus_sequencer.py --backlash 500
     python focus_sequencer.py --backlash 0        # disable backlash compensation
-    python focus_sequencer.py --min-correction 20 # skip moves smaller than 20 steps
-    python focus_sequencer.py --min-correction 0  # always move
+    python focus_sequencer.py --min-correction 20 # backlash overshoot threshold
+    python focus_sequencer.py --min-correction 0  # always move in both directions
 
 Author
 ------
@@ -208,11 +210,11 @@ def parse_arguments():
         default=DEFAULT_MIN_CORRECTION,
         metavar="STEPS",
         help=(
-            f"Minimum absolute correction (in steps) required to trigger a move. "
-            f"If the calculated correction is smaller than this value, the script "
-            f"exits without moving the focuser. Avoids unnecessary motor activity "
-            f"when thermal drift is negligible. "
-            f"Set to 0 to always move. Default: {DEFAULT_MIN_CORRECTION}"
+            f"Minimum correction (in steps) required to trigger a move when a "
+            f"backlash overshoot would be needed (target < current position). "
+            f"Moves in the favourable direction (target >= current) are always "
+            f"applied regardless of size. "
+            f"Set to 0 to always move in both directions. Default: {DEFAULT_MIN_CORRECTION}"
         ),
     )
     parser.add_argument(
@@ -380,7 +382,7 @@ def main():
     print(f"Last applied         : {last_focus} steps @ {last_temp:.2f} {DEG_C}")
     print(f"TCF                  : {tcf:.2f} steps/{DEG_C}")
     print(f"Backlash             : {args.backlash} steps")
-    print(f"Min correction       : {args.min_correction} steps")
+    print(f"Min correction       : {args.min_correction} steps (backlash direction only)")
 
     # --- Connect and read temperature ---
     if args.dry_run:
@@ -425,12 +427,22 @@ def main():
     print(f"Target position         : {focus_target} steps")
     print(f"Correction needed       : {correction:+d} steps")
 
-    # --- Check minimum correction threshold ---
-    if abs(correction) < args.min_correction:
+    # --- Check minimum correction threshold (backlash direction only) ---
+    # Moves in the favourable direction (target >= current) are always applied
+    # regardless of size to keep focus continuously corrected.
+    # The threshold only guards against unnecessary overshoot cycles.
+    needs_backlash = args.backlash > 0 and focus_target < current_position
+    if correction == 0:
+        print("\nNo correction needed. Focuser already at target position.")
+        if not args.dry_run:
+            focuser.Connected = False
+        print("\nDone.")
+        return
+    if needs_backlash and abs(correction) < args.min_correction:
         print(
             f"\nCorrection ({abs(correction)} steps) is below "
-            f"--min-correction ({args.min_correction} steps). "
-            "No move needed."
+            f"--min-correction ({args.min_correction} steps) and requires backlash overshoot. "
+            "Skipping to avoid unnecessary double move."
         )
         if not args.dry_run:
             focuser.Connected = False
@@ -439,7 +451,7 @@ def main():
 
     # --- Apply or report ---
     if args.dry_run:
-        if args.backlash > 0 and focus_target < current_position:
+        if needs_backlash:
             overshoot = max(focus_target - args.backlash, 0)
             print(
                 f"\n[DRY RUN] Would overshoot to {overshoot} steps, "
