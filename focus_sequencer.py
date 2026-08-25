@@ -78,13 +78,13 @@ State JSON refresh
     PERIODIC Refocus WHEN TEMP CHANGES BY 1) is immediately reflected
     in the thermal model before the next thermal correction is applied.
 
-    The producer script is located by searching in this order:
-        1. Same directory as this script
-        2. Sibling repository: ..\sharpcap-focus-temperature\
+    The producer script is located exclusively in the sibling repository:
+        ..\sharpcap-focus-temperature\sharpcap_focuser.py
 
-    The --output-state-json argument is always passed explicitly so the
-    producer writes to the exact file the sequencer is already reading,
-    regardless of the working directory of either script.
+    It must NOT be copied into this repository. The --output-state-json
+    argument is always passed explicitly so the producer writes to the
+    exact file the sequencer is already reading, regardless of the
+    working directory of either script.
 
     If the refresh fails (script not found, non-zero exit code) the
     sequencer logs UPDATE FAILED and continues with the previously
@@ -200,7 +200,11 @@ from pathlib import Path
 DEG_C = "C"  # plain ASCII — avoids cp850 mojibake when reading logs with 'type' on Windows cmd
 DELTA = "d"  # plain ASCII prefix for delta (dT instead of \u0394T)
 STATE_JSON_FILENAME = "sharpcap_focus_state.json"
-SHARPCAP_FOCUSER_FILENAME = "sharpcap_focuser.py"
+SHARPCAP_FOCUSER_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "sharpcap-focus-temperature"
+    / "sharpcap_focuser.py"
+)
 DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
 DEFAULT_BACKLASH_STEPS = 500
 DEFAULT_MIN_CORRECTION = 50
@@ -210,11 +214,6 @@ MOVE_POLL_INTERVAL_S = 0.5
 _STATE_JSON_CANDIDATES = [
     Path(__file__).resolve().parent / STATE_JSON_FILENAME,
     Path(__file__).resolve().parent.parent / "sharpcap-focus-temperature" / STATE_JSON_FILENAME,
-]
-
-_SHARPCAP_FOCUSER_CANDIDATES = [
-    Path(__file__).resolve().parent / SHARPCAP_FOCUSER_FILENAME,
-    Path(__file__).resolve().parent.parent / "sharpcap-focus-temperature" / SHARPCAP_FOCUSER_FILENAME,
 ]
 
 
@@ -278,30 +277,25 @@ def resolve_state_json(cli_path: str | None) -> Path:
     )
 
 
-def resolve_sharpcap_focuser() -> Path | None:
-    """Return the path to sharpcap_focuser.py, or None if not found."""
-    for candidate in _SHARPCAP_FOCUSER_CANDIDATES:
-        if candidate.exists():
-            return candidate
-    return None
-
-
 def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | None:
     """Call sharpcap_focuser.py to regenerate the state JSON from the latest
     SharpCap logs.  Returns the freshly loaded state dict on success, or
     None if the refresh could not be completed (the caller should continue
     with the previously loaded state).
+
+    The producer script is located exclusively in the sibling repository
+    sharpcap-focus-temperature and must NOT be copied into this repo.
     """
-    focuser_script = resolve_sharpcap_focuser()
-    if focuser_script is None:
-        searched = "\n  ".join(str(c) for c in _SHARPCAP_FOCUSER_CANDIDATES)
-        log.error(f"UPDATE FAILED — sharpcap_focuser.py not found in:\n  {searched}")
+    if not SHARPCAP_FOCUSER_PATH.exists():
+        log.error(
+            f"UPDATE FAILED — sharpcap_focuser.py not found at: {SHARPCAP_FOCUSER_PATH}"
+        )
         return None
 
     result = subprocess.run(
         [
             sys.executable,
-            str(focuser_script),
+            str(SHARPCAP_FOCUSER_PATH),
             "--output-state-json", str(state_json_path),
         ],
         capture_output=True,
