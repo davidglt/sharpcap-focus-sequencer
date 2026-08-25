@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 David González López-Tercero <davidglt@dragonit.es>
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""
+r"""
 SharpCap Focus Sequencer — On-demand thermal focus compensator.
 
 Reads the regression model and last autofocus reference produced by
@@ -49,6 +49,7 @@ Usage
     python focus_sequencer.py --state-json path/to/sharpcap_focus_state.json
     python focus_sequencer.py --ascom-id "ASCOM.EAF_2.Focuser"
     python focus_sequencer.py --dry-run
+    python focus_sequencer.py --dry-run --temp 18.5
 
 Author
 ------
@@ -129,10 +130,10 @@ def parse_arguments():
         "--state-json",
         default=None,
         help=(
-            f"Path to sharpcap_focus_state.json produced by "
-            f"sharpcap-focus-temperature. If omitted, the script searches "
-            f"the local directory and then the sibling repository "
-            f"sharpcap-focus-temperature automatically."
+            "Path to sharpcap_focus_state.json produced by "
+            "sharpcap-focus-temperature. If omitted, the script searches "
+            "the local directory and then the sibling repository "
+            "sharpcap-focus-temperature automatically."
         ),
     )
     parser.add_argument(
@@ -146,6 +147,16 @@ def parse_arguments():
         help=(
             "Calculate and print the target position without moving the "
             "focuser or writing the state JSON."
+        ),
+    )
+    parser.add_argument(
+        "--temp",
+        type=float,
+        default=None,
+        metavar="DEGREES",
+        help=(
+            f"Current temperature in {DEG_C} for --dry-run simulation. "
+            "If omitted in dry-run mode, the script prompts interactively."
         ),
     )
     parser.add_argument(
@@ -276,13 +287,17 @@ def main():
     # --- Connect and read temperature ---
     if args.dry_run:
         print("\n[DRY RUN] Skipping ASCOM connection.")
-        print("Enter current temperature manually for simulation:")
-        try:
-            t_current = float(input(f"  Temperature ({DEG_C}): "))
-        except (ValueError, EOFError):
-            print("Invalid input. Aborting dry run.")
-            sys.exit(1)
-        current_position = focus_ref
+        if args.temp is not None:
+            t_current = args.temp
+            print(f"Temperature (--temp) : {t_current:.2f} {DEG_C}")
+        else:
+            print("Enter current temperature manually for simulation:")
+            try:
+                t_current = float(input(f"  Temperature ({DEG_C}): "))
+            except (ValueError, EOFError):
+                print("Invalid input. Use --temp <value> for non-interactive dry-run.")
+                sys.exit(1)
+        current_position = last_focus
     else:
         print(f"\nConnecting to ASCOM focuser: {args.ascom_id}")
         focuser = connect_focuser(args.ascom_id)
@@ -297,7 +312,7 @@ def main():
     delta_t = t_current - temp_ref
     delta_steps = tcf * delta_t
     focus_target = round(focus_ref + delta_steps)
-    correction = focus_target - (current_position if not args.dry_run else last_focus)
+    correction = focus_target - current_position
 
     print(f"\nDelta T (current - ref) : {delta_t:+.2f} {DEG_C}")
     print(f"Delta steps (TCF * dT)  : {delta_steps:+.1f}")
