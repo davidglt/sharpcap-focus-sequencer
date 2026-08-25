@@ -5,7 +5,7 @@ Reads the regression model and last autofocus reference produced by
 [sharpcap-focus-temperature](https://github.com/davidglt/sharpcap-focus-temperature)
 and moves the focuser to the thermally corrected position.
 
-Designed to be called from a nightly sequencer (NINA, SGP´Pro, etc.)
+Designed to be called from a nightly sequencer (NINA, SGP'Pro, etc.)
 after dither operations.
 
 ## Thermal compensation formula
@@ -58,7 +58,7 @@ python focus_sequencer.py --state-json C:\path\to\sharpcap_focus_state.json
 Specify a custom ASCOM driver ID:
 
 ```bash
-python focus_sequencer.py --ascom-id "ASCOM.ZWO.Focuser"
+python focus_sequencer.py --ascom-id "ASCOM.ZWO.Focuser1"
 ```
 
 Dry run (calculates and prints the target position without moving the focuser):
@@ -76,12 +76,42 @@ python focus_sequencer.py --dry-run
 | `--dry-run` | off | Calculate target position without moving the focuser. |
 | `--move-timeout` | `60` | Seconds to wait for the focuser move to complete. |
 
+## Multiple EAF units
+
+If you have more than one ZWO EAF connected (e.g. main tube + guide tube),
+the ZWO ASCOM driver registers each unit under a different ProgID:
+
+| ProgID | Typical use | Position range |
+|---|---|---|
+| `ASCOM.ZWO.Focuser` | First EAF (e.g. guide tube) | ~300 000 steps |
+| `ASCOM.ZWO.Focuser1` | Second EAF (e.g. main tube, `EAF(ASI2600)`) | ~25 000 steps |
+
+To identify which ProgID corresponds to which unit, run the detection utility
+with both EAF units connected:
+
+```bash
+python detect_focusers.py
+```
+
+This probes all known ZWO ProgIDs and prints the `Name`, `Position`, and
+`Temperature` of each focuser that responds. The main tube focuser
+(C8 + ASI2600MC Pro) will show a position around **25 000 steps**.
+
+Once identified, pass the correct ProgID to `focus_sequencer.py`:
+
+```bash
+python focus_sequencer.py --ascom-id "ASCOM.ZWO.Focuser1"
+```
+
+To make it permanent, update `DEFAULT_ASCOM_ID` at the top of `focus_sequencer.py`.
+
 ## Typical workflow
 
 1. Run `sharpcap_focuser.py` after each imaging session to update the thermal model.
-2. In your nightly sequencer (NINA, SGP´Pro), add a **Script** step after each dither block.
-3. Point that script step to `focus_sequencer.py`.
-4. The script reads the current EAF temperature, calculates the correction, and moves the focuser automatically.
+2. Run `detect_focusers.py` once (with both EAFs connected) to identify the correct ProgID.
+3. In your nightly sequencer (NINA, SGP'Pro), add a **Script** step after each dither block.
+4. Point that script step to `focus_sequencer.py --ascom-id <ProgID>`.
+5. The script reads the current EAF temperature, calculates the correction, and moves the focuser automatically.
 
 ## State JSON
 
