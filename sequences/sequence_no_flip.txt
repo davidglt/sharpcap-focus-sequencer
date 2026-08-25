@@ -5,6 +5,7 @@ SEQUENCE
     LOAD PROFILE Secuence_ASI2600MC_180s_100_6248x4176
     FRAMETYPE Light
     FOCUSER CONNECT
+    RUN C:\Users\davidglt\Desktop\sharpcap-focus-sequencer\run_focus.bat WITH PARAMS "" WAIT True
     PERIODIC sharpcap-focus-sequencer EVERY 420
         RUN C:\Users\davidglt\Desktop\sharpcap-focus-sequencer\run_focus.bat WITH PARAMS "" WAIT True
     END PERIODIC
