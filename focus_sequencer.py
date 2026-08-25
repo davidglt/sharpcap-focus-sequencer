@@ -21,10 +21,16 @@ Where:
     T_current  = current temperature read from the EAF sensor
     TCF        = temperature compensation factor (steps / °C)
 
-ASCOM ProgIDs (ZWO EAF driver)
-------------------------------
-    ASCOM.EAF.Focuser    -> first EAF  (guide tube: 50ED + ASI224MC,  ~300 000 steps)
-    ASCOM.EAF_2.Focuser  -> second EAF (main tube:  C8  + ASI2600MC Pro, ~25 000 steps)
+ASCOM access
+------------
+    ASCOM Device Hub is required to allow simultaneous access from
+    SharpCap and this script. Configure Device Hub to proxy
+    ASCOM.EAF_2.Focuser (main tube: C8 + ASI2600MC Pro, ~25 000 steps)
+    and point both clients to ASCOM.DeviceHub.Focuser.
+
+    Direct ProgIDs (ZWO EAF driver, single-client only):
+        ASCOM.EAF.Focuser    -> first EAF  (guide tube: 50ED + ASI224MC,  ~300 000 steps)
+        ASCOM.EAF_2.Focuser  -> second EAF (main tube:  C8  + ASI2600MC Pro, ~25 000 steps)
 
 Usage
 -----
@@ -59,8 +65,9 @@ from pathlib import Path
 
 DEG_C = "\u00B0C"
 DEFAULT_STATE_JSON = "sharpcap_focus_state.json"
-# Main tube EAF (C8 + ASI2600MC Pro) — second unit registered by the ZWO ASCOM driver
-DEFAULT_ASCOM_ID = "ASCOM.EAF_2.Focuser"
+# Route through ASCOM Device Hub so SharpCap and this script can connect simultaneously.
+# Device Hub must be configured to proxy ASCOM.EAF_2.Focuser (C8 + ASI2600MC Pro).
+DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
 MOVE_TIMEOUT_S = 60
 MOVE_POLL_INTERVAL_S = 0.5
 
