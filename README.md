@@ -58,7 +58,7 @@ python focus_sequencer.py --state-json C:\path\to\sharpcap_focus_state.json
 Specify a custom ASCOM driver ID:
 
 ```bash
-python focus_sequencer.py --ascom-id "ASCOM.ZWO.Focuser1"
+python focus_sequencer.py --ascom-id "ASCOM.EAF_2.Focuser"
 ```
 
 Dry run (calculates and prints the target position without moving the focuser):
@@ -72,7 +72,7 @@ python focus_sequencer.py --dry-run
 | Option | Default | Description |
 |---|---|---|
 | `--state-json` | `sharpcap_focus_state.json` | Path to the JSON state file produced by `sharpcap_focuser.py`. |
-| `--ascom-id` | `ASCOM.ZWO.Focuser` | ASCOM ProgID of the focuser driver. |
+| `--ascom-id` | `ASCOM.EAF_2.Focuser` | ASCOM ProgID of the focuser driver. |
 | `--dry-run` | off | Calculate target position without moving the focuser. |
 | `--move-timeout` | `60` | Seconds to wait for the focuser move to complete. |
 
@@ -81,36 +81,71 @@ python focus_sequencer.py --dry-run
 If you have more than one ZWO EAF connected (e.g. main tube + guide tube),
 the ZWO ASCOM driver registers each unit under a different ProgID:
 
-| ProgID | Typical use | Position range |
+| ProgID | Tube | Position range |
 |---|---|---|
-| `ASCOM.ZWO.Focuser` | First EAF (e.g. guide tube) | ~300 000 steps |
-| `ASCOM.ZWO.Focuser1` | Second EAF (e.g. main tube, `EAF(ASI2600)`) | ~25 000 steps |
+| `ASCOM.EAF.Focuser` | First EAF — guide tube (50ED + ASI224MC) | ~300 000 steps |
+| `ASCOM.EAF_2.Focuser` | Second EAF — main tube (C8 + ASI2600MC Pro) | ~25 000 steps |
 
-To identify which ProgID corresponds to which unit, run the detection utility
-with both EAF units connected:
+### Identifying ProgIDs with detect_focusers.py
+
+With both EAF units connected, run:
 
 ```bash
 python detect_focusers.py
 ```
 
-This probes all known ZWO ProgIDs and prints the `Name`, `Position`, and
-`Temperature` of each focuser that responds. The main tube focuser
-(C8 + ASI2600MC Pro) will show a position around **25 000 steps**.
+This probes `ASCOM.EAF.Focuser` through `ASCOM.EAF_5.Focuser` and prints
+the `Name`, `Position`, and `Temperature` of each unit that responds:
 
-Once identified, pass the correct ProgID to `focus_sequencer.py`:
+```
+Probing ASCOM focuser ProgIDs...
 
-```bash
-python focus_sequencer.py --ascom-id "ASCOM.ZWO.Focuser1"
+[OK] ASCOM.EAF.Focuser
+     Name        : ZWO Focuser
+     Description : ZWO EAF Focuser
+     Position    : 312,540 steps
+     Temperature : 18.40 °C
+
+[OK] ASCOM.EAF_2.Focuser
+     Name        : ZWO Focuser (2) - EAF(ASI2600)
+     Description : ZWO EAF Focuser
+     Position    : 25,041 steps    <-- main tube
+     Temperature : 18.42 °C
 ```
 
-To make it permanent, update `DEFAULT_ASCOM_ID` at the top of `focus_sequencer.py`.
+### Identifying ProgIDs with the ASCOM Chooser (alternative)
+
+If `detect_focusers.py` does not find your device, use the ASCOM Chooser
+directly to discover the exact ProgID registered on your system:
+
+```python
+import win32com.client
+
+chooser = win32com.client.Dispatch("ASCOM.Utilities.Chooser")
+chooser.DeviceType = "Focuser"
+prog_id = chooser.Choose("")
+
+print(f"ProgID: '{prog_id}'")
+
+if prog_id:
+    f = win32com.client.Dispatch(prog_id)
+    f.Connected = True
+    print(f"Name       : {f.Name}")
+    print(f"Position   : {f.Position}")
+    print(f"Temperature: {f.Temperature}")
+    f.Connected = False
+```
+
+This opens the ASCOM Chooser window — select the desired EAF and click **OK**
+(not the X button). The ProgID, current position, and temperature will be
+printed to the console. Repeat for each EAF to map all connected units.
 
 ## Typical workflow
 
 1. Run `sharpcap_focuser.py` after each imaging session to update the thermal model.
 2. Run `detect_focusers.py` once (with both EAFs connected) to identify the correct ProgID.
 3. In your nightly sequencer (NINA, SGP'Pro), add a **Script** step after each dither block.
-4. Point that script step to `focus_sequencer.py --ascom-id <ProgID>`.
+4. Point that script step to `focus_sequencer.py` (default ProgID is `ASCOM.EAF_2.Focuser`).
 5. The script reads the current EAF temperature, calculates the correction, and moves the focuser automatically.
 
 ## State JSON
