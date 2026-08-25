@@ -18,7 +18,7 @@ SEQUENCE
     STOP AT 4 FROM MERIDIAN
         STOP AT 30 FROM HORIZON
             STOP AT 40 FROM HORIZON
-                PERIODIC Refocus WHEN TEMP CHANGES BY 1.5
+                PERIODIC Refocus WHEN TEMP CHANGES BY 1
                     BEGIN GUIDING PAUSE
                         SET PLATESOLVE/FOCUS SETTINGS EXPOSURE 5
                             REFOCUS PROMPTROI False
