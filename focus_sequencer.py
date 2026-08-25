@@ -69,6 +69,27 @@ State JSON lookup
     NOT be copied into this repository; always use the original output
     from the producer repository (single source of truth).
 
+State JSON refresh
+------------------
+    At the beginning of each cycle (after the busy check passes),
+    focus_sequencer.py calls sharpcap_focuser.py to regenerate the
+    state JSON from the latest SharpCap log files.  This ensures that
+    any autofocus triggered by SharpCap during the session (e.g. a
+    PERIODIC Refocus WHEN TEMP CHANGES BY 1) is immediately reflected
+    in the thermal model before the next thermal correction is applied.
+
+    The producer script is located by searching in this order:
+        1. Same directory as this script
+        2. Sibling repository: ..\sharpcap-focus-temperature\
+
+    The --output-state-json argument is always passed explicitly so the
+    producer writes to the exact file the sequencer is already reading,
+    regardless of the working directory of either script.
+
+    If the refresh fails (script not found, non-zero exit code) the
+    sequencer logs UPDATE FAILED and continues with the previously
+    loaded state rather than aborting.
+
 Dry-run mode
 ------------
     In --dry-run mode the script connects to the ASCOM driver to read the
@@ -102,6 +123,7 @@ Logging
 
     Example session (successful correction):
         2026-08-25 23:14:00 | START | ref=2026-08-25T21:30:00 | focus_ref=24831 | T_ref=18.50C | TCF=-61.59 | last_focus=24831 | last_T=18.50C | backlash=500 | min_correction=50
+        2026-08-25 23:14:01 | INFO  | UPDATE OK — ref=2026-08-25 23:11:32 | focus_ref=25342 | T_ref=18.40C | TCF=-61.59
         2026-08-25 23:14:02 | INFO  | T=17.20C | dT=-1.30C | TCF=-61.59 | pos=24831 | correction=+80 | backlash=False | final=24911
         2026-08-25 23:14:02 | END   | pos=24911 | reason=ok
 
@@ -109,6 +131,12 @@ Logging
         2026-08-25 23:21:00 | START | ...
         2026-08-25 23:21:01 | SKIP  | Focuser busy (IsMoving=True) — skipping this cycle, retry in 7 min
         2026-08-25 23:21:01 | END   | pos=24911 | reason=busy
+
+    Example session (state refresh failed, correction continues with previous state):
+        2026-08-25 23:28:00 | START | ...
+        2026-08-25 23:28:01 | ERROR | UPDATE FAILED (rc=1): <stderr from sharpcap_focuser.py>
+        2026-08-25 23:28:03 | INFO  | T=17.10C | dT=-1.40C | correction=+12 | ...
+        2026-08-25 23:28:03 | END   | pos=24923 | reason=ok
 
     Example session (below min-correction):
         2026-08-25 23:28:00 | START | ...
@@ -163,6 +191,7 @@ GPL-3.0-or-later
 import argparse
 import json
 import logging
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -171,6 +200,7 @@ from pathlib import Path
 DEG_C = "C"  # plain ASCII — avoids cp850 mojibake when reading logs with 'type' on Windows cmd
 DELTA = "d"  # plain ASCII prefix for delta (dT instead of \u0394T)
 STATE_JSON_FILENAME = "sharpcap_focus_state.json"
+SHARPCAP_FOCUSER_FILENAME = "sharpcap_focuser.py"
 DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
 DEFAULT_BACKLASH_STEPS = 500
 DEFAULT_MIN_CORRECTION = 50
@@ -180,6 +210,11 @@ MOVE_POLL_INTERVAL_S = 0.5
 _STATE_JSON_CANDIDATES = [
     Path(__file__).resolve().parent / STATE_JSON_FILENAME,
     Path(__file__).resolve().parent.parent / "sharpcap-focus-temperature" / STATE_JSON_FILENAME,
+]
+
+_SHARPCAP_FOCUSER_CANDIDATES = [
+    Path(__file__).resolve().parent / SHARPCAP_FOCUSER_FILENAME,
+    Path(__file__).resolve().parent.parent / "sharpcap-focus-temperature" / SHARPCAP_FOCUSER_FILENAME,
 ]
 
 
@@ -241,6 +276,57 @@ def resolve_state_json(cli_path: str | None) -> Path:
         f"sharpcap_focus_state.json not found in any of:\n  {searched}\n"
         "Run sharpcap_focuser.py (sharpcap-focus-temperature) first to generate it."
     )
+
+
+def resolve_sharpcap_focuser() -> Path | None:
+    """Return the path to sharpcap_focuser.py, or None if not found."""
+    for candidate in _SHARPCAP_FOCUSER_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | None:
+    """Call sharpcap_focuser.py to regenerate the state JSON from the latest
+    SharpCap logs.  Returns the freshly loaded state dict on success, or
+    None if the refresh could not be completed (the caller should continue
+    with the previously loaded state).
+    """
+    focuser_script = resolve_sharpcap_focuser()
+    if focuser_script is None:
+        searched = "\n  ".join(str(c) for c in _SHARPCAP_FOCUSER_CANDIDATES)
+        log.error(f"UPDATE FAILED — sharpcap_focuser.py not found in:\n  {searched}")
+        return None
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(focuser_script),
+            "--output-state-json", str(state_json_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip().replace("\n", " ") or "(no stderr)"
+        log.error(f"UPDATE FAILED (rc={result.returncode}): {stderr}")
+        return None
+
+    try:
+        fresh_state = load_state(state_json_path)
+    except (FileNotFoundError, ValueError) as exc:
+        log.error(f"UPDATE FAILED — could not reload state JSON after refresh: {exc}")
+        return None
+
+    ref       = fresh_state.get("timestamp_ref", "unknown")
+    focus_ref = fresh_state.get("focus_ref", "?")
+    temp_ref  = fresh_state.get("temp_ref", "?")
+    tcf       = fresh_state.get("model_tcf", "?")
+    temp_str  = f"{temp_ref:.2f}{DEG_C}" if isinstance(temp_ref, float) else str(temp_ref)
+    tcf_str   = f"{tcf:.2f}" if isinstance(tcf, float) else str(tcf)
+    log.info(f"UPDATE OK — ref={ref} | focus_ref={focus_ref} | T_ref={temp_str} | TCF={tcf_str}")
+    return fresh_state
 
 
 def parse_arguments():
@@ -381,6 +467,20 @@ def main():
         log.info(f"END   | pos={current_position} | reason=busy")
         focuser.Connected = False
         return
+
+    # --- Refresh state JSON from latest SharpCap logs ---
+    # Always called after the busy check so we never interrupt an ongoing
+    # autofocus.  The producer writes to the exact same path the sequencer
+    # is reading (--output-state-json passed explicitly) so there is a
+    # single source of truth regardless of working directory.
+    # On failure we log and continue with the previously loaded state.
+    if not args.dry_run:
+        fresh = refresh_state_json(state_json_path, log)
+        if fresh is not None:
+            state     = fresh
+            focus_ref = int(state["focus_ref"])
+            temp_ref  = float(state["temp_ref"])
+            tcf       = float(state["model_tcf"])
 
     current_position = read_position(focuser)
 
