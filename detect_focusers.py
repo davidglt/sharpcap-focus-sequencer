@@ -6,8 +6,13 @@
 """
 detect_focusers.py — ASCOM focuser detection utility.
 
-Probes common ZWO EAF ASCOM ProgIDs and prints the Name, Description,
-and current Position of each focuser that responds.
+Probes known ZWO EAF ASCOM ProgIDs and prints the Name, Description,
+Position, and Temperature of each focuser that responds.
+
+The ZWO EAF ASCOM driver registers each connected unit as:
+    ASCOM.EAF_1.Focuser  (first unit)
+    ASCOM.EAF_2.Focuser  (second unit)
+    ...
 
 Useful when multiple EAF units are connected (e.g. main tube + guide tube)
 to identify which ProgID corresponds to each focuser before configuring
@@ -21,19 +26,19 @@ Expected output example
 -----------------------
     Probing ASCOM focuser ProgIDs...
 
-    [OK] ASCOM.ZWO.Focuser
+    [OK] ASCOM.EAF_1.Focuser
          Name        : ZWO Focuser
          Description : ZWO EAF Focuser
-         Position    : 312540 steps
+         Position    : 312,540 steps
          Temperature : 18.40 °C
 
-    [OK] ASCOM.ZWO.Focuser1
-         Name        : ZWO Focuser (2)
+    [OK] ASCOM.EAF_2.Focuser
+         Name        : ZWO Focuser (2) - EAF(ASI2600)
          Description : ZWO EAF Focuser
-         Position    : 25041 steps   <-- this is the main tube (C8 + ASI2600MC)
+         Position    : 25,041 steps   <-- this is the main tube (C8 + ASI2600MC)
          Temperature : 18.42 °C
 
-    [--] ASCOM.ZWO.Focuser2  ->  could not connect (COM error)
+    [--] ASCOM.EAF_3.Focuser  ->  could not connect (COM error)
 
 Author
 ------
@@ -48,18 +53,19 @@ import sys
 
 DEG_C = "\u00B0C"
 
-# ProgIDs to probe — ZWO driver registers up to Focuser9 for multiple units
+# Real ProgID scheme used by the ZWO EAF ASCOM driver:
+# each connected unit is registered as ASCOM.EAF_N.Focuser (1-based index).
 PROG_IDS = [
-    "ASCOM.ZWO.Focuser",
-    "ASCOM.ZWO.Focuser1",
-    "ASCOM.ZWO.Focuser2",
-    "ASCOM.ZWO.Focuser3",
-    "ASCOM.ZWO.Focuser4",
+    "ASCOM.EAF_1.Focuser",
+    "ASCOM.EAF_2.Focuser",
+    "ASCOM.EAF_3.Focuser",
+    "ASCOM.EAF_4.Focuser",
+    "ASCOM.EAF_5.Focuser",
 ]
 
 
-def probe_focuser(prog_id: str) -> dict | None:
-    """Try to connect to a focuser and return its properties, or None on failure."""
+def probe_focuser(prog_id: str) -> dict:
+    """Try to connect to a focuser and return its properties, or an error dict."""
     try:
         import win32com.client
     except ImportError:
@@ -103,7 +109,11 @@ def main():
             print(f"[--] {prog_id}  ->  could not connect ({result['error']})")
         else:
             found.append(prog_id)
-            pos_str = f"{result['position']:,} steps" if result["position"] is not None else "(unavailable)"
+            pos_str = (
+                f"{result['position']:,} steps"
+                if result["position"] is not None
+                else "(unavailable)"
+            )
             temp_str = (
                 f"{result['temperature']:.2f} {DEG_C}"
                 if result["temperature"] is not None
