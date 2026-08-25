@@ -83,15 +83,52 @@ Logging
     The logs/ directory is created automatically if it does not exist.
     Log files are not committed to the repository (.gitignore).
 
+    Every execution produces exactly one START line and one END line,
+    with zero or more INFO/SKIP/ERROR lines in between.
+
     Log line format:
         YYYY-MM-DD HH:MM:SS | LEVEL | <message>
 
     Levels used:
-        START  — beginning of each script execution with reference data
-        INFO   — successful correction with full details
+        START  — beginning of each execution; reference data from state JSON
+                 (last_focus and last_T are the values applied in the previous
+                 run, not an estimate of the current state)
+        INFO   — successful correction with full details, or no move needed
         SKIP   — correction skipped (focuser busy or below min-correction)
-        ERROR  — unexpected error
+        ERROR  — unexpected error (ASCOM failure, move timeout, sensor error)
         DRY    — dry-run execution (no move performed)
+        END    — end of each execution; always written regardless of outcome
+                 pos=N/A when focuser could not be connected
+
+    Example session (successful correction):
+        2026-08-25 23:14:00 | START | ref=2026-08-25T21:30:00 | focus_ref=24831 | T_ref=18.50°C | TCF=-61.59 | last_focus=24831 | last_T=18.50°C | backlash=500 | min_correction=50
+        2026-08-25 23:14:02 | INFO  | T=17.20°C | ΔT=-1.30°C | TCF=-61.59 | pos=24831 | correction=+80 | backlash=False | final=24911
+        2026-08-25 23:14:02 | END   | pos=24911 | reason=ok
+
+    Example session (focuser busy):
+        2026-08-25 23:21:00 | START | ...
+        2026-08-25 23:21:01 | SKIP  | Focuser busy (IsMoving=True) — skipping this cycle, retry in 7 min
+        2026-08-25 23:21:01 | END   | pos=24911 | reason=busy
+
+    Example session (below min-correction):
+        2026-08-25 23:28:00 | START | ...
+        2026-08-25 23:28:02 | SKIP  | T=17.10°C | ΔT=-1.40°C | correction=+12 | below min_correction=50 (backlash direction) — skipped
+        2026-08-25 23:28:02 | END   | pos=24911 | reason=min_correction
+
+    Example session (ASCOM connection failure):
+        2026-08-25 23:35:00 | START | ...
+        2026-08-25 23:35:01 | ERROR | ASCOM connection failed: No such device 'ASCOM.DeviceHub.Focuser'
+        2026-08-25 23:35:01 | END   | pos=N/A | reason=error
+
+    Example session (move timeout):
+        2026-08-25 23:42:00 | START | ...
+        2026-08-25 23:43:02 | ERROR | T=17.00°C | pos=24911 | target=24991 | move failed: Focuser did not reach position 24991 within 60s
+        2026-08-25 23:43:02 | END   | pos=24911 | reason=error
+
+    Example session (temperature sensor disconnected):
+        2026-08-25 23:49:00 | START | ...
+        2026-08-25 23:49:01 | ERROR | Could not read temperature: Temperature returned None — check EAF sensor
+        2026-08-25 23:49:01 | END   | pos=24911 | reason=error
 
 Usage
 -----
@@ -166,13 +203,11 @@ def setup_logging() -> logging.Logger:
     logger = logging.getLogger("focus_sequencer")
     logger.setLevel(logging.DEBUG)
 
-    # File handler — append mode (creates file if absent)
     fh = logging.FileHandler(log_filename, mode="a", encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
     logger.addHandler(fh)
 
-    # Console handler — same format
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.DEBUG)
     ch.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
@@ -181,10 +216,10 @@ def setup_logging() -> logging.Logger:
     return logger
 
 
-# Custom level names for the log file
-logging.addLevelName(logging.INFO, "INFO ")
+# Custom level names so the log file shows fixed-width labels
+logging.addLevelName(logging.INFO,    "INFO ")
 logging.addLevelName(logging.WARNING, "SKIP ")
-logging.addLevelName(logging.ERROR, "ERROR")
+logging.addLevelName(logging.ERROR,   "ERROR")
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +297,7 @@ def read_temperature(focuser) -> float:
     except Exception as exc:
         raise RuntimeError(f"Could not read temperature: {exc}") from exc
     if temp is None:
-        raise RuntimeError("Focuser returned None for Temperature.")
+        raise RuntimeError("Focuser returned None for Temperature — check EAF sensor.")
     return float(temp)
 
 
@@ -309,30 +344,40 @@ def main():
         state = load_state(state_json_path)
     except (FileNotFoundError, ValueError) as exc:
         log.error(str(exc))
+        log.info("END   | pos=N/A | reason=error")
         sys.exit(1)
 
-    focus_ref = int(state["focus_ref"])
-    temp_ref = float(state["temp_ref"])
-    tcf = float(state["model_tcf"])
-    timestamp_ref = state.get("timestamp_ref", "unknown")
+    focus_ref       = int(state["focus_ref"])
+    temp_ref        = float(state["temp_ref"])
+    tcf             = float(state["model_tcf"])
+    timestamp_ref   = state.get("timestamp_ref", "unknown")
+    last_focus      = state.get("last_focus_applied", "unknown")
+    last_t          = state.get("last_temp_applied", "unknown")
+
+    last_t_str  = f"{last_t:.2f}{DEG_C}" if isinstance(last_t, float) else str(last_t)
 
     log.info(
         f"START | ref={timestamp_ref} | focus_ref={focus_ref} | "
         f"T_ref={temp_ref:.2f}{DEG_C} | TCF={tcf:.2f} | "
+        f"last_focus={last_focus} | last_T={last_t_str} | "
         f"backlash={args.backlash} | min_correction={args.min_correction}"
         + (" | DRY_RUN" if args.dry_run else "")
     )
 
     # --- Connect ---
+    focuser = None
     try:
         focuser = connect_focuser(args.ascom_id)
     except Exception as exc:
         log.error(f"ASCOM connection failed: {exc}")
+        log.info("END   | pos=N/A | reason=error")
         sys.exit(1)
 
     # --- Busy check ---
     if not check_not_busy(focuser):
+        current_position = read_position(focuser)
         log.warning("Focuser busy (IsMoving=True) — skipping this cycle, retry in 7 min")
+        log.info(f"END   | pos={current_position} | reason=busy")
         focuser.Connected = False
         return
 
@@ -340,47 +385,48 @@ def main():
 
     # --- Temperature ---
     try:
-        if args.temp is not None:
-            t_current = args.temp
-        else:
-            t_current = read_temperature(focuser)
+        t_current = args.temp if args.temp is not None else read_temperature(focuser)
     except RuntimeError as exc:
         log.error(str(exc))
+        log.info(f"END   | pos={current_position} | reason=error")
         focuser.Connected = False
         sys.exit(1)
 
     # --- Calculate correction ---
-    delta_t = t_current - temp_ref
+    delta_t      = t_current - temp_ref
     focus_target = round(focus_ref + tcf * delta_t)
-    correction = focus_target - current_position
+    correction   = focus_target - current_position
     needs_backlash = args.backlash > 0 and focus_target < current_position
 
     # --- No correction needed ---
     if correction == 0:
         log.info(
-            f"T={t_current:.2f}{DEG_C} | ΔT={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"T={t_current:.2f}{DEG_C} | \u0394T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
             f"pos={current_position} | correction=0 | backlash=False | final={current_position} | no move needed"
         )
+        log.info(f"END   | pos={current_position} | reason=ok")
         focuser.Connected = False
         return
 
     # --- Below min-correction threshold (backlash direction only) ---
     if needs_backlash and abs(correction) < args.min_correction:
         log.warning(
-            f"T={t_current:.2f}{DEG_C} | ΔT={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"T={t_current:.2f}{DEG_C} | \u0394T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
             f"pos={current_position} | correction={correction:+d} | "
             f"below min_correction={args.min_correction} (backlash direction) — skipped"
         )
+        log.info(f"END   | pos={current_position} | reason=min_correction")
         focuser.Connected = False
         return
 
     # --- Dry run ---
     if args.dry_run:
         log.info(
-            f"DRY | T={t_current:.2f}{DEG_C} | ΔT={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"DRY | T={t_current:.2f}{DEG_C} | \u0394T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
             f"pos={current_position} | correction={correction:+d} | "
             f"backlash={needs_backlash} | target={focus_target} | move NOT executed"
         )
+        log.info(f"END   | pos={current_position} | reason=dry_run")
         focuser.Connected = False
         return
 
@@ -394,23 +440,26 @@ def main():
             f"T={t_current:.2f}{DEG_C} | pos={current_position} | "
             f"target={focus_target} | move failed: {exc}"
         )
+        log.info(f"END   | pos={current_position} | reason=error")
         focuser.Connected = False
         sys.exit(1)
 
     if abs(final_position - focus_target) > 5:
         log.warning(
-            f"T={t_current:.2f}{DEG_C} | ΔT={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"T={t_current:.2f}{DEG_C} | \u0394T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
             f"pos={current_position} | correction={correction:+d} | backlash={needs_backlash} | "
             f"final={final_position} | WARNING: differs from target {focus_target} by more than 5 steps"
         )
+        log.info(f"END   | pos={final_position} | reason=ok_with_warning")
     else:
         log.info(
-            f"T={t_current:.2f}{DEG_C} | ΔT={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
+            f"T={t_current:.2f}{DEG_C} | \u0394T={delta_t:+.2f}{DEG_C} | TCF={tcf:.2f} | "
             f"pos={current_position} | correction={correction:+d} | "
             f"backlash={needs_backlash} | final={final_position}"
         )
+        log.info(f"END   | pos={final_position} | reason=ok")
 
-    state["last_temp_applied"] = round(t_current, 2)
+    state["last_temp_applied"]  = round(t_current, 2)
     state["last_focus_applied"] = focus_target
     save_state(state, state_json_path)
 
