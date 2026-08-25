@@ -2,7 +2,7 @@ SEQUENCE
     DELAY 1
     STILL MODE
     COOL DOWN TO -5 RATE 8 TOLERANCE 1
-    LOAD PROFILE Secuence_ASI2600MC_180s_100_6248x4176
+    LOAD PROFILE Secuence_ASI2600MC_180s_100_4176x4176
     FRAMETYPE Light
     FOCUSER CONNECT
     RUN C:\Users\davidglt\Desktop\sharpcap-focus-sequencer\run_focus.bat WITH PARAMS "" WAIT True
