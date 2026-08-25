@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 David González López-Tercero <davidglt@dragonit.es>
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""
+r"""
 detect_focusers.py — ASCOM focuser detection utility.
 
 Probes known ZWO EAF ASCOM ProgIDs and prints the Name, Description,
@@ -19,9 +19,15 @@ Useful when multiple EAF units are connected (e.g. main tube + guide tube)
 to identify which ProgID corresponds to each focuser before configuring
 focus_sequencer.py.
 
+Note: the ZWO EAF driver may need a short delay after connecting before
+returning valid Position and Temperature values. If you see 0 / 0.00 for
+a focuser that should have valid readings, run the script again with
+--init-delay <seconds> (default: 1.0).
+
 Usage
 -----
     python detect_focusers.py
+    python detect_focusers.py --init-delay 2.0
 
 Expected output example (two EAF units connected)
 -------------------------------------------------
@@ -29,13 +35,13 @@ Expected output example (two EAF units connected)
 
     [OK] ASCOM.EAF.Focuser
          Name        : ZWO Focuser
-         Description : ZWO EAF Focuser
+         Description : ZWO Focuser (1)
          Position    : 312,540 steps   <-- guide tube (50ED + ASI224MC)
          Temperature : 18.40 °C
 
     [OK] ASCOM.EAF_2.Focuser
-         Name        : ZWO Focuser (2) - EAF(ASI2600)
-         Description : ZWO EAF Focuser
+         Name        : ZWO Focuser
+         Description : ZWO Focuser (2)
          Position    : 25,041 steps    <-- main tube (C8 + ASI2600MC Pro)
          Temperature : 18.42 °C
 
@@ -50,9 +56,12 @@ License
 GPL-3.0-or-later
 """
 
+import argparse
 import sys
+import time
 
 DEG_C = "\u00B0C"
+DEFAULT_INIT_DELAY = 1.0
 
 # Real ProgID scheme used by the ZWO EAF ASCOM driver:
 #   First unit  : ASCOM.EAF.Focuser   (no number suffix)
@@ -67,7 +76,7 @@ PROG_IDS = [
 ]
 
 
-def probe_focuser(prog_id: str) -> dict:
+def probe_focuser(prog_id: str, init_delay: float) -> dict:
     """Try to connect to a focuser and return its properties, or an error dict."""
     try:
         import win32com.client
@@ -81,6 +90,9 @@ def probe_focuser(prog_id: str) -> dict:
     try:
         focuser = win32com.client.Dispatch(prog_id)
         focuser.Connected = True
+
+        if init_delay > 0:
+            time.sleep(init_delay)
 
         name = getattr(focuser, "Name", "(unknown)")
         description = getattr(focuser, "Description", "(unknown)")
@@ -100,33 +112,58 @@ def probe_focuser(prog_id: str) -> dict:
         return {"error": str(exc)}
 
 
+def parse_arguments():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Probe ZWO EAF ASCOM ProgIDs and report connected focusers."
+    )
+    parser.add_argument(
+        "--init-delay",
+        type=float,
+        default=DEFAULT_INIT_DELAY,
+        metavar="SECONDS",
+        help=(
+            f"Seconds to wait after connecting before reading Position and "
+            f"Temperature (default: {DEFAULT_INIT_DELAY}). Increase if values "
+            f"appear as 0 / 0.00."
+        ),
+    )
+    return parser.parse_args()
+
+
 def main():
     """Probe all known ZWO EAF ProgIDs and report results."""
+    args = parse_arguments()
+
     print("Probing ASCOM focuser ProgIDs...\n")
 
     found = []
     for prog_id in PROG_IDS:
-        result = probe_focuser(prog_id)
+        result = probe_focuser(prog_id, args.init_delay)
 
         if "error" in result:
             print(f"[--] {prog_id}  ->  could not connect ({result['error']})")
         else:
             found.append(prog_id)
-            pos_str = (
-                f"{result['position']:,} steps"
-                if result["position"] is not None
-                else "(unavailable)"
-            )
-            temp_str = (
-                f"{result['temperature']:.2f} {DEG_C}"
-                if result["temperature"] is not None
-                else "(unavailable)"
-            )
+            pos = result["position"]
+            temp = result["temperature"]
+            pos_str = f"{pos:,} steps" if pos is not None else "(unavailable)"
+            temp_str = f"{temp:.2f} {DEG_C}" if temp is not None else "(unavailable)"
+
+            warn = ""
+            if pos == 0 and temp == 0.0:
+                warn = (
+                    "  \u26a0 position and temperature are both 0 — "
+                    "driver may still be initialising; try --init-delay 3.0"
+                )
+
             print(f"[OK] {prog_id}")
             print(f"     Name        : {result['name']}")
             print(f"     Description : {result['description']}")
             print(f"     Position    : {pos_str}")
             print(f"     Temperature : {temp_str}")
+            if warn:
+                print(f"     {warn}")
         print()
 
     if not found:
