@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--min-correction` option: minimum correction in steps required to trigger a move
   when a backlash overshoot would be needed (target < current position). Default: 50 steps
   (~0.81 °C with TCF = −61.59 steps/°C). Set to `0` to always move in both directions.
+- `refresh_state_json()`: at the start of each correction cycle (after the busy check),
+  `focus_sequencer.py` calls `sharpcap_focuser.py` via subprocess to regenerate
+  `sharpcap_focus_state.json` from the latest SharpCap log files. This ensures that any
+  autofocus triggered by SharpCap during the session (e.g. `PERIODIC Refocus WHEN TEMP
+  CHANGES BY 1`) is immediately reflected in the thermal model before the next correction.
+  If the refresh fails, the previously loaded state is used and the error is logged.
+  Refresh is skipped in `--dry-run` mode.
 
 ### Changed
 
@@ -26,7 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cost of a backlash overshoot cycle.
 - `--dry-run` now connects to the ASCOM driver and reads the real focuser `Position`.
   The temperature is read from the EAF sensor unless `--temp` is supplied, in which case
-  the supplied value is used instead. The move and state JSON update are still skipped.
+  the supplied value is used instead. The move, state JSON refresh, and state JSON update
+  are all skipped.
+- `STATE_JSON_PATH` is now a single canonical constant pointing exclusively to
+  `..\sharpcap-focus-temperature\sharpcap_focus_state.json`. The previous two-candidate
+  fallback list (local directory + sibling repository) has been removed. Use `--state-json`
+  only in exceptional cases (e.g. a non-standard clone layout).
+- `SHARPCAP_FOCUSER_PATH` is now a single canonical constant pointing exclusively to
+  `..\sharpcap-focus-temperature\sharpcap_focuser.py`. No local candidate is searched.
+
+### Removed
+
+- `run_update_reference.bat`: superseded by the automatic `refresh_state_json()` call
+  inside `focus_sequencer.py`. For manual/diagnostic refresh, call
+  `sharpcap_focuser.py` directly from the command line.
 
 ## [1.0.0] - 2026-08-25
 

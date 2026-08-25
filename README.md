@@ -5,8 +5,8 @@ Reads the regression model and last autofocus reference produced by
 [sharpcap-focus-temperature](https://github.com/davidglt/sharpcap-focus-temperature)
 and moves the focuser to the thermally corrected position.
 
-Designed to be called from a nightly sequencer (NINA, SGP'Pro, etc.)
-after dither operations.
+Designed to be called from a nightly sequencer (SharpCap Advanced Sequencer,
+NINA, SGP'Pro, etc.) on a periodic schedule.
 
 ## Thermal compensation formula
 
@@ -23,12 +23,18 @@ focus_target = focus_ref + TCF × (T_current − T_ref)
 
 ## How it works
 
-1. Locates `sharpcap_focus_state.json` automatically (see [State JSON location](#state-json-location)).
+1. Refreshes `sharpcap_focus_state.json` automatically by calling `sharpcap_focuser.py`
+   (sibling repository) — so the latest SharpCap autofocus result is always reflected
+   before each correction.
 2. Connects to the ZWO EAF via ASCOM and reads the real focuser position and temperature.
-3. Aborts immediately if `IsMoving = True` (e.g. SharpCap autofocus is running) — the next scheduled cycle will retry.
+3. Aborts immediately if `IsMoving = True` (e.g. SharpCap autofocus is running) — the
+   next scheduled cycle will retry.
 4. Calculates the thermally compensated target position.
-5. Skips the move if the correction is below `--min-correction` **and** a backlash overshoot would be needed; always moves if the target is in the favourable direction (no overshoot required).
-6. Moves the focuser to that position using backlash-compensated movement (always arrives from below).
+5. Skips the move if the correction is below `--min-correction` **and** a backlash
+   overshoot would be needed; always moves if the target is in the favourable direction
+   (no overshoot required).
+6. Moves the focuser to that position using backlash-compensated movement (always arrives
+   from below).
 7. Updates `last_temp_applied` and `last_focus_applied` in the JSON state file.
 
 ## Two-repository workflow
@@ -56,32 +62,33 @@ that silently drifts from the real model.
 ```
 [New night]
   │
-  ├─ 1. Run sharpcap_focuser.py  ← fits thermal model, writes sharpcap_focus_state.json
-  │
-  └─ 2. Imaging sequence loop:
+  └─ Imaging sequence loop:
          ├─ Capture subframes
          ├─ Dither
-         └─ Run focus_sequencer.py  ← reads JSON, corrects focus thermally
-              (repeat until refocus triggered at ΔT = −1 °C)
+         └─ Run focus_sequencer.py (via run_focus.bat)
               │
-              └─ Refocus (SharpCap autofocus)
-                 └─ Run sharpcap_focuser.py again  ← updates state JSON reference
+              ├─ busy check (abort if SharpCap autofocus is running)
+              ├─ call sharpcap_focuser.py  ← refreshes state JSON automatically
+              └─ apply thermal correction
+                   │
+                   (repeat every 7 min)
+                   │
+                   └─ SharpCap PERIODIC Refocus at ΔT = 1 °C
+                        └─ next cycle of focus_sequencer.py picks up the
+                           new autofocus reference automatically
 ```
 
 ## State JSON location
 
-When `--state-json` is **not** supplied, the script searches for
-`sharpcap_focus_state.json` in this order:
+`sharpcap_focus_state.json` must live in the sibling repository
+`sharpcap-focus-temperature`. The script always reads from and writes to:
 
-| Priority | Path |
-|---|---|
-| 1 | `--state-json <path>` (explicit, if given) |
-| 2 | Same directory as `focus_sequencer.py` |
-| 3 | `..\sharpcap-focus-temperature\` (sibling repository) |
+```
+..\sharpcap-focus-temperature\sharpcap_focus_state.json
+```
 
-The sibling-repository path (priority 3) is the recommended setup for
-normal use: just clone both repositories side by side and the script
-finds the state file automatically every time.
+Use `--state-json <path>` only in exceptional cases (e.g. a non-standard
+clone layout). Do not copy the file into this repository.
 
 ## Requirements
 
@@ -148,9 +155,9 @@ python focus_sequencer.py --min-correction 0    # always move in both directions
 
 | Option | Default | Description |
 |---|---|---|
-| `--state-json` | auto-detected | Path to the JSON state file produced by `sharpcap_focuser.py`. If omitted, searches local dir then sibling repository. |
+| `--state-json` | auto-detected | Path to the JSON state file produced by `sharpcap_focuser.py`. If omitted, uses the canonical sibling-repository path. |
 | `--ascom-id` | `ASCOM.DeviceHub.Focuser` | ASCOM ProgID of the focuser driver. |
-| `--dry-run` | off | Connect to the driver, read real position and temperature, calculate the target, but do **not** move the focuser and do **not** update the state JSON. Use `--temp` to override the sensor reading. |
+| `--dry-run` | off | Connect to the driver, read real position and temperature, calculate the target, but do **not** move the focuser, do **not** refresh the state JSON, and do **not** update `last_temp_applied`. Use `--temp` to override the sensor reading. |
 | `--temp` | (from sensor) | Override the temperature read from the EAF sensor (°C). Requires an ASCOM connection to read the real focuser position. Useful with `--dry-run` to simulate a specific temperature scenario. |
 | `--backlash` | `500` | Backlash compensation in steps. The focuser always arrives at the target from below; if the target is below the current position, it first overshoots to `(target − backlash)` then moves up. Set to `0` to disable. Measure your actual backlash and update this value accordingly. |
 | `--min-correction` | `50` | Minimum correction (steps) required to trigger a move **only when a backlash overshoot is needed** (target < current position). Moves in the favourable direction (target ≥ current) are always applied regardless of size. With TCF = −61.59 steps/°C, 50 steps ≈ 0.81 °C. Set to `0` to always move in both directions. |
@@ -277,17 +284,20 @@ printed to the console. Repeat for each EAF to map all connected units.
 
 ## Typical workflow
 
-1. Run `sharpcap_focuser.py` (sharpcap-focus-temperature) after each autofocus to update the thermal model and state JSON.
-2. Run `detect_focusers.py` once (with both EAFs connected) to identify the correct ProgID.
-3. In your nightly sequencer (NINA, SGP'Pro), add a **Script** step after each dither block.
-4. Point that script step to `focus_sequencer.py` — no extra arguments needed if both repos are sibling directories.
-5. The script auto-detects the state JSON, reads the real EAF position and temperature, calculates the correction, and moves the focuser.
-6. When temperature drops 1 °C, trigger a full SharpCap autofocus; then re-run `sharpcap_focuser.py` to reset the reference.
+1. Run `detect_focusers.py` once (with both EAFs connected) to identify the correct ProgID.
+2. In your nightly sequencer (SharpCap Advanced Sequencer, NINA, SGP'Pro), add a
+   **Script** step after each dither block pointing to `run_focus.bat`.
+3. The script auto-detects the state JSON, calls `sharpcap_focuser.py` to refresh it,
+   reads the real EAF position and temperature, calculates the correction, and moves
+   the focuser.
+4. SharpCap's `PERIODIC Refocus WHEN TEMP CHANGES BY 1` triggers a full autofocus
+   when needed — the next cycle of `focus_sequencer.py` picks up the new reference
+   automatically.
 
 ## State JSON
 
 This script reads and updates `sharpcap_focus_state.json` in-place
-(in whichever location it was found — see [State JSON location](#state-json-location)):
+in `..\sharpcap-focus-temperature\`:
 
 ```json
 {
@@ -305,6 +315,15 @@ This script reads and updates `sharpcap_focus_state.json` in-place
 After each run, `last_temp_applied` and `last_focus_applied` are updated to
 reflect the correction just applied, while `focus_ref` and `temp_ref` remain
 unchanged as the original reference point.
+
+## Regenerating the state JSON manually
+
+For diagnostics or a forced refresh without triggering a thermal correction,
+call `sharpcap_focuser.py` directly from the command line:
+
+```bash
+.venv\Scripts\python.exe ..\sharpcap-focus-temperature\sharpcap_focuser.py
+```
 
 ## Related
 
