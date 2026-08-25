@@ -30,6 +30,15 @@ Backlash compensation
     The backlash value is configurable via --backlash (default: 500 steps).
     Set to 0 to disable backlash compensation entirely.
 
+Minimum correction threshold
+-----------------------------
+    The script skips the move if the absolute correction is smaller than
+    --min-correction (default: 20 steps). This avoids unnecessary motor
+    activity and backlash overshoot cycles when the thermal drift is
+    negligible. With TCF = -61.59 steps/°C, 20 steps corresponds to
+    ~0.32 °C of temperature change.
+    Set to 0 to always move regardless of correction size.
+
 ASCOM access
 ------------
     ASCOM Device Hub is required to allow simultaneous access from
@@ -60,7 +69,9 @@ Usage
     python focus_sequencer.py --dry-run
     python focus_sequencer.py --dry-run --temp 18.5
     python focus_sequencer.py --backlash 500
-    python focus_sequencer.py --backlash 0   # disable backlash compensation
+    python focus_sequencer.py --backlash 0        # disable backlash compensation
+    python focus_sequencer.py --min-correction 20 # skip moves smaller than 20 steps
+    python focus_sequencer.py --min-correction 0  # always move
 
 Author
 ------
@@ -92,6 +103,7 @@ STATE_JSON_FILENAME = "sharpcap_focus_state.json"
 # Device Hub must be configured to proxy ASCOM.EAF_2.Focuser (C8 + ASI2600MC Pro).
 DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
 DEFAULT_BACKLASH_STEPS = 500
+DEFAULT_MIN_CORRECTION = 20
 MOVE_TIMEOUT_S = 60
 MOVE_POLL_INTERVAL_S = 0.5
 
@@ -182,6 +194,19 @@ def parse_arguments():
             f"the current position, the script first moves to "
             f"(target - backlash) and then back up to the target. "
             f"Set to 0 to disable. Default: {DEFAULT_BACKLASH_STEPS}"
+        ),
+    )
+    parser.add_argument(
+        "--min-correction",
+        type=int,
+        default=DEFAULT_MIN_CORRECTION,
+        metavar="STEPS",
+        help=(
+            f"Minimum absolute correction (in steps) required to trigger a move. "
+            f"If the calculated correction is smaller than this value, the script "
+            f"exits without moving the focuser. Avoids unnecessary motor activity "
+            f"when thermal drift is negligible. "
+            f"Set to 0 to always move. Default: {DEFAULT_MIN_CORRECTION}"
         ),
     )
     parser.add_argument(
@@ -336,6 +361,7 @@ def main():
     print(f"Last applied         : {last_focus} steps @ {last_temp:.2f} {DEG_C}")
     print(f"TCF                  : {tcf:.2f} steps/{DEG_C}")
     print(f"Backlash             : {args.backlash} steps")
+    print(f"Min correction       : {args.min_correction} steps")
 
     # --- Connect and read temperature ---
     if args.dry_run:
@@ -372,6 +398,18 @@ def main():
     print(f"Target position         : {focus_target} steps")
     print(f"Correction needed       : {correction:+d} steps")
 
+    # --- Check minimum correction threshold ---
+    if abs(correction) < args.min_correction:
+        print(
+            f"\nCorrection ({abs(correction)} steps) is below "
+            f"--min-correction ({args.min_correction} steps). "
+            "No move needed."
+        )
+        if not args.dry_run:
+            focuser.Connected = False
+        print("\nDone.")
+        return
+
     # --- Apply or report ---
     if args.dry_run:
         if args.backlash > 0 and focus_target < current_position:
@@ -380,26 +418,21 @@ def main():
                 f"\n[DRY RUN] Would overshoot to {overshoot} steps, "
                 f"then move up to {focus_target} steps."
             )
-        elif correction != 0:
-            print(f"\n[DRY RUN] Would move directly to {focus_target} steps.")
         else:
-            print("\n[DRY RUN] No correction needed.")
+            print(f"\n[DRY RUN] Would move directly to {focus_target} steps.")
         print("[DRY RUN] Move NOT executed.")
     else:
-        if correction == 0:
-            print("\nNo correction needed. Focuser already at target position.")
-        else:
-            print(f"\nMoving focuser to {focus_target} steps...")
-            final_position = move_focuser_with_backlash(
-                focuser, focus_target, current_position, args.backlash, args.move_timeout
-            )
-            print(f"Move complete. Final position: {final_position} steps")
+        print(f"\nMoving focuser to {focus_target} steps...")
+        final_position = move_focuser_with_backlash(
+            focuser, focus_target, current_position, args.backlash, args.move_timeout
+        )
+        print(f"Move complete. Final position: {final_position} steps")
 
-            if abs(final_position - focus_target) > 5:
-                print(
-                    f"WARNING: Final position {final_position} differs from "
-                    f"target {focus_target} by more than 5 steps."
-                )
+        if abs(final_position - focus_target) > 5:
+            print(
+                f"WARNING: Final position {final_position} differs from "
+                f"target {focus_target} by more than 5 steps."
+            )
 
         # Update state JSON with current values
         state["last_temp_applied"] = round(t_current, 2)
