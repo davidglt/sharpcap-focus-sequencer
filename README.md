@@ -122,8 +122,9 @@ the target, but does **not** move the focuser and does **not** update the state 
 python focus_sequencer.py --dry-run
 ```
 
-Dry run with temperature override (useful to simulate a specific temperature
-without relying on the EAF sensor reading):
+Dry run with temperature override (connects to the driver, reads real focuser
+position, but uses the supplied temperature instead of the EAF sensor reading;
+does **not** move the focuser and does **not** update the state JSON):
 
 ```bash
 python focus_sequencer.py --dry-run --temp 18.5
@@ -150,7 +151,7 @@ python focus_sequencer.py --min-correction 0    # always move in both directions
 | `--state-json` | auto-detected | Path to the JSON state file produced by `sharpcap_focuser.py`. If omitted, searches local dir then sibling repository. |
 | `--ascom-id` | `ASCOM.DeviceHub.Focuser` | ASCOM ProgID of the focuser driver. |
 | `--dry-run` | off | Connect to the driver, read real position and temperature, calculate the target, but do **not** move the focuser and do **not** update the state JSON. Use `--temp` to override the sensor reading. |
-| `--temp` | (from sensor) | Override the temperature read from the EAF sensor (°C). Useful with `--dry-run` to simulate a specific temperature. |
+| `--temp` | (from sensor) | Override the temperature read from the EAF sensor (°C). Requires an ASCOM connection to read the real focuser position. Useful with `--dry-run` to simulate a specific temperature scenario. |
 | `--backlash` | `500` | Backlash compensation in steps. The focuser always arrives at the target from below; if the target is below the current position, it first overshoots to `(target − backlash)` then moves up. Set to `0` to disable. Measure your actual backlash and update this value accordingly. |
 | `--min-correction` | `50` | Minimum correction (steps) required to trigger a move **only when a backlash overshoot is needed** (target < current position). Moves in the favourable direction (target ≥ current) are always applied regardless of size. With TCF = −61.59 steps/°C, 50 steps ≈ 0.81 °C. Set to `0` to always move in both directions. |
 | `--move-timeout` | `60` | Seconds to wait for each focuser move to complete. |
@@ -175,11 +176,13 @@ only one layer:
 ## Busy detection
 
 The script checks `IsMoving` immediately after connecting. If the focuser is
-already moving (e.g. SharpCap is running an autofocus), the script prints a
+already moving (e.g. SharpCap is running an autofocus), the script logs a
 warning and exits cleanly without touching the focuser:
 
 ```
-Focuser is busy (IsMoving=True). Skipping this cycle — will retry in 7 min.
+2026-08-25 23:21:00 | INFO  | START | ...
+2026-08-25 23:21:01 | WARN  | SKIP  | Focuser busy (IsMoving=True) — skipping this cycle, retry in 7 min
+2026-08-25 23:21:01 | INFO  | END   | pos=24911 | reason=busy
 ```
 
 The next scheduled execution (7 minutes later by default in the SharpCap

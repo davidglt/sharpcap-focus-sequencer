@@ -24,10 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeping focus continuously corrected with small frequent adjustments.
 - Default `--min-correction` raised from 20 to 50 steps (~0.81 °C) to better match the
   cost of a backlash overshoot cycle.
-- `--dry-run` now connects to the ASCOM driver and reads the real focuser `Position` and
-  `Temperature` instead of falling back to `last_focus_applied` from the state JSON.
-  The move and state JSON update are still skipped. Use `--temp` to override the sensor
-  reading for scenario simulation.
+- `--dry-run` now connects to the ASCOM driver and reads the real focuser `Position`.
+  The temperature is read from the EAF sensor unless `--temp` is supplied, in which case
+  the supplied value is used instead. The move and state JSON update are still skipped.
 
 ## [1.0.0] - 2026-08-25
 
