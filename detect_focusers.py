@@ -37,13 +37,13 @@ Expected output example (two EAF units connected)
          Name        : ZWO Focuser
          Description : ZWO Focuser (1)
          Position    : 312,540 steps   <-- guide tube (50ED + ASI224MC)
-         Temperature : 18.40 °C
+         Temperature : 18.40 ºC
 
     [OK] ASCOM.EAF_2.Focuser
          Name        : ZWO Focuser
          Description : ZWO Focuser (2)
          Position    : 25,041 steps    <-- main tube (C8 + ASI2600MC Pro)
-         Temperature : 18.42 °C
+         Temperature : 18.42 ºC
 
     [--] ASCOM.EAF_3.Focuser  ->  could not connect (COM error)
 
@@ -60,7 +60,7 @@ import argparse
 import sys
 import time
 
-DEG_C = "\u00B0C"
+DEG_C = "ºC"  # masculine ordinal (U+00BA) — safe in Windows cp1252 console
 DEFAULT_INIT_DELAY = 1.0
 
 # Real ProgID scheme used by the ZWO EAF ASCOM driver:

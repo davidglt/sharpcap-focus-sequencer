@@ -19,7 +19,7 @@ Where:
     focus_ref  = focuser position at the reference autofocus point
     T_ref      = temperature at the reference autofocus point
     T_current  = current temperature read from the EAF sensor
-    TCF        = temperature compensation factor (steps / C)
+    TCF        = temperature compensation factor (steps / ºC)
 
 Backlash compensation
 ---------------------
@@ -38,7 +38,7 @@ Minimum correction threshold
     When no backlash is needed (target >= current_position), the script
     always moves, even if the correction is tiny, to keep the focus
     continuously well-corrected without accumulating drift.
-    With TCF = -61.59 steps/C, 50 steps corresponds to ~0.81 C.
+    With TCF = -61.59 steps/ºC, 50 steps corresponds to ~0.81 ºC.
     Set to 0 to always move regardless of correction size or direction.
 
 Busy detection
@@ -122,9 +122,9 @@ Logging
                  pos=N/A when focuser could not be connected
 
     Example session (successful correction):
-        2026-08-25 23:14:00 | START | ref=2026-08-25T21:30:00 | focus_ref=24831 | T_ref=18.50C | TCF=-61.59 | last_focus=24831 | last_T=18.50C | backlash=500 | min_correction=50
-        2026-08-25 23:14:01 | INFO  | UPDATE OK — ref=2026-08-25 23:11:32 | focus_ref=25342 | T_ref=18.40C | TCF=-61.59
-        2026-08-25 23:14:02 | INFO  | T=17.20C | dT=-1.30C | TCF=-61.59 | pos=24831 | correction=+80 | backlash=False | final=24911
+        2026-08-25 23:14:00 | START | ref=2026-08-25T21:30:00 | focus_ref=24831 | T_ref=18.50ºC | TCF=-61.59 | last_focus=24831 | last_T=18.50ºC | backlash=500 | min_correction=50
+        2026-08-25 23:14:01 | INFO  | UPDATE OK — ref=2026-08-25 23:11:32 | focus_ref=25342 | T_ref=18.40ºC | TCF=-61.59
+        2026-08-25 23:14:02 | INFO  | T=17.20ºC | dT=-1.30ºC | TCF=-61.59 | pos=24831 | correction=+80 | backlash=False | final=24911
         2026-08-25 23:14:02 | END   | pos=24911 | reason=ok
 
     Example session (focuser busy):
@@ -135,12 +135,12 @@ Logging
     Example session (state refresh failed, correction continues with previous state):
         2026-08-25 23:28:00 | START | ...
         2026-08-25 23:28:01 | ERROR | UPDATE FAILED (rc=1): <stderr from sharpcap_focuser.py>
-        2026-08-25 23:28:03 | INFO  | T=17.10C | dT=-1.40C | correction=+12 | ...
+        2026-08-25 23:28:03 | INFO  | T=17.10ºC | dT=-1.40ºC | correction=+12 | ...
         2026-08-25 23:28:03 | END   | pos=24923 | reason=ok
 
     Example session (below min-correction):
         2026-08-25 23:28:00 | START | ...
-        2026-08-25 23:28:02 | SKIP  | T=17.10C | dT=-1.40C | correction=+12 | below min_correction=50 (backlash direction) — skipped
+        2026-08-25 23:28:02 | SKIP  | T=17.10ºC | dT=-1.40ºC | correction=+12 | below min_correction=50 (backlash direction) — skipped
         2026-08-25 23:28:02 | END   | pos=24911 | reason=min_correction
 
     Example session (ASCOM connection failure):
@@ -150,7 +150,7 @@ Logging
 
     Example session (move timeout):
         2026-08-25 23:42:00 | START | ...
-        2026-08-25 23:43:02 | ERROR | T=17.00C | pos=24911 | target=24991 | move failed: Focuser did not reach position 24991 within 60s
+        2026-08-25 23:43:02 | ERROR | T=17.00ºC | pos=24911 | target=24991 | move failed: Focuser did not reach position 24991 within 60s
         2026-08-25 23:43:02 | END   | pos=24911 | reason=error
 
     Example session (temperature sensor disconnected):
@@ -197,7 +197,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-DEG_C = "C"  # plain ASCII — avoids cp850 mojibake when reading logs with 'type' on Windows cmd
+DEG_C = "ºC"  # masculine ordinal (U+00BA) — safe in Windows cp1252 console
 DELTA = "d"  # plain ASCII prefix for delta (dT instead of \u0394T)
 STATE_JSON_FILENAME = "sharpcap_focus_state.json"
 SHARPCAP_FOCUSER_PATH = (
