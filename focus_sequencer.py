@@ -83,6 +83,13 @@ State JSON
     sequencer logs UPDATE FAILED and continues with the previously
     loaded state rather than aborting.
 
+    sharpcap_focuser.py is invoked using the Python interpreter from the
+    sibling repository's own virtual environment (.venv), not the
+    sequencer's .venv.  This is required because sharpcap_focuser.py
+    depends on numpy, statsmodels, and matplotlib, which are installed
+    only in the sharpcap-focus-temperature .venv.
+    See resolve_producer_python() for the resolution logic.
+
 Dry-run mode
 ------------
     In --dry-run mode the script connects to the ASCOM driver to read the
@@ -254,6 +261,37 @@ logging.addLevelName(logging.ERROR,   "ERROR")
 # Helpers
 # ---------------------------------------------------------------------------
 
+def resolve_producer_python(log: logging.Logger) -> str:
+    """Return the path to the Python interpreter that should run sharpcap_focuser.py.
+
+    sharpcap_focuser.py lives in the sibling repository sharpcap-focus-temperature
+    and requires numpy, statsmodels, and matplotlib — packages that are installed
+    only in *that* repository's virtual environment, not in the sequencer's .venv.
+
+    Resolution order (first existing path wins):
+        1. <sibling-repo>/.venv/Scripts/python.exe  (Windows)
+        2. <sibling-repo>/.venv/bin/python           (POSIX / WSL)
+
+    If neither candidate exists the function falls back to sys.executable and
+    logs a warning.  This covers the edge case where the sibling repo has not
+    yet had its .venv created (first-run scenario).
+    """
+    sibling_root = SHARPCAP_FOCUSER_PATH.parent
+    candidates = [
+        sibling_root / ".venv" / "Scripts" / "python.exe",  # Windows
+        sibling_root / ".venv" / "bin" / "python",           # POSIX / WSL
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    log.warning(
+        f"UPDATE — sibling .venv not found at {sibling_root / '.venv'}; "
+        "falling back to sys.executable (numpy/statsmodels may be missing)"
+    )
+    return sys.executable
+
+
 def resolve_state_json(cli_path: str | None) -> Path:
     """Return the state JSON path to use.
 
@@ -282,6 +320,9 @@ def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | Non
 
     The producer script is located exclusively in the sibling repository
     sharpcap-focus-temperature and must NOT be copied into this repo.
+
+    The sibling repository's .venv Python is used (resolve_producer_python)
+    so that numpy/statsmodels/matplotlib are available to sharpcap_focuser.py.
     """
     if not SHARPCAP_FOCUSER_PATH.exists():
         log.error(
@@ -289,9 +330,11 @@ def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | Non
         )
         return None
 
+    producer_python = resolve_producer_python(log)
+
     result = subprocess.run(
         [
-            sys.executable,
+            producer_python,
             str(SHARPCAP_FOCUSER_PATH),
             "--output-state-json", str(state_json_path),
         ],

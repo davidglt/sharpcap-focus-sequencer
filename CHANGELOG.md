@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `refresh_state_json()` was invoking `sharpcap_focuser.py` with `sys.executable`,
+  i.e. the Python interpreter from the sequencer's own `.venv`.  That environment
+  only contains `pywin32` and lacks `numpy`, `statsmodels`, and `matplotlib`, which
+  `sharpcap_focuser.py` requires.  The call now uses the Python interpreter from the
+  sibling repository's `.venv` (resolved by the new `resolve_producer_python()`).
+
 ### Added
 
+- `resolve_producer_python()`: locates the Python interpreter inside the
+  `sharpcap-focus-temperature` sibling repository's `.venv`:
+    - Windows: `.venv/Scripts/python.exe`
+    - POSIX / WSL: `.venv/bin/python`
+  Falls back to `sys.executable` with a `SKIP` warning when neither candidate
+  exists (e.g. the sibling `.venv` has not been created yet).
 - `--min-correction` option: minimum correction in steps required to trigger a move
   when a backlash overshoot would be needed (target < current position). Default: 50 steps
   (~0.81 °C with TCF = −61.59 steps/°C). Set to `0` to always move in both directions.
