@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `resolve_producer_python()`: locates the Python interpreter inside the
-  `sharpcap-focus-temperature` sibling repository's `.venv`:
+  `sharpcap-focus-temperature` sibling repository’s `.venv`:
     - Windows: `.venv/Scripts/python.exe`
     - POSIX / WSL: `.venv/bin/python`
   Falls back to `sys.executable` with a `SKIP` warning when neither candidate
@@ -43,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry point; `C:\astro\` example replaced with `<any-parent>\` to reflect that
   the installation path is unrestricted; *Installation* section added;
   *Regenerating the state JSON manually* updated to use the sibling `.venv`.
+- README: backlash section updated to note that the ZWO EAF ASCOM driver reports
+  commanded position only; optical double V-curve in SharpCap is the recommended
+  measurement method.
 - Busy detection: the script now checks `IsMoving` immediately after connecting and
   aborts cleanly if the focuser is already moving (e.g. SharpCap autofocus is running).
   The next scheduled cycle retries automatically.
@@ -57,25 +60,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the supplied value is used instead. The move, state JSON refresh, and state JSON update
   are all skipped.
 - `STATE_JSON_PATH` is now a single canonical constant pointing exclusively to
-  `..\sharpcap-focus-temperature\sharpcap_focus_state.json`. The previous two-candidate
-  fallback list (local directory + sibling repository) has been removed. Use `--state-json`
-  only in exceptional cases (e.g. a non-standard clone layout).
+  `..\sharpcap-focus-temperature\sharpcap_focus_state.json`.
 - `SHARPCAP_FOCUSER_PATH` is now a single canonical constant pointing exclusively to
-  `..\sharpcap-focus-temperature\sharpcap_focuser.py`. No local candidate is searched.
+  `..\sharpcap-focus-temperature\sharpcap_focuser.py`.
 
 ### Fixed
 
 - `refresh_state_json()` was invoking `sharpcap_focuser.py` with `sys.executable`,
-  i.e. the Python interpreter from the sequencer's own `.venv`.  That environment
+  i.e. the Python interpreter from the sequencer’s own `.venv`. That environment
   only contains `pywin32` and lacks `numpy`, `statsmodels`, and `matplotlib`, which
-  `sharpcap_focuser.py` requires.  The call now uses the Python interpreter from the
-  sibling repository's `.venv` (resolved by the new `resolve_producer_python()`).
+  `sharpcap_focuser.py` requires. The call now uses the Python interpreter from the
+  sibling repository’s `.venv` (resolved by the new `resolve_producer_python()`).
 
 ### Removed
 
 - `run_update_reference.bat`: superseded by the automatic `refresh_state_json()` call
   inside `focus_sequencer.py`. For manual/diagnostic refresh, call
   `sharpcap_focuser.py` directly from the command line.
+- `measure_backlash.py`: removed. The ZWO EAF ASCOM driver reports the commanded
+  position, not the physical encoder position, so step-counting yields 0 and is not
+  useful. Use the optical double V-curve method in SharpCap to measure real mechanical
+  backlash.
 
 ## [1.0.0] - 2026-08-25
 
@@ -95,7 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `--dry-run` option: calculates and prints target without moving the focuser.
   - `--move-timeout` option: configurable timeout for focuser move (default 60 s).
 - `detect_focusers.py` — utility to identify ASCOM ProgIDs of connected ZWO EAF units.
-  - Probes `ASCOM.ZWO.Focuser` through `ASCOM.ZWO.Focuser4`.
+  - Probes `ASCOM.EAF.Focuser` through `ASCOM.EAF_5.Focuser`.
   - Prints `Name`, `Description`, `Position`, and `Temperature` for each responding focuser.
   - Useful when multiple EAF units are connected (e.g. main tube + guide tube).
 - `requirements/requirements.txt` — `pywin32` dependency.

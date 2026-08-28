@@ -215,21 +215,28 @@ python focus_sequencer.py --min-correction 0    # always move in both directions
 | `--ascom-id` | `ASCOM.DeviceHub.Focuser` | ASCOM ProgID of the focuser driver. |
 | `--dry-run` | off | Connect to the driver, read real position and temperature, calculate the target, but do **not** move the focuser, do **not** refresh the state JSON, and do **not** update `last_temp_applied`. Use `--temp` to override the sensor reading. |
 | `--temp` | (from sensor) | Override the temperature read from the EAF sensor (°C). Requires an ASCOM connection to read the real focuser position. Useful with `--dry-run` to simulate a specific temperature scenario. |
-| `--backlash` | `500` | Backlash compensation in steps. The focuser always arrives at the target from below; if the target is below the current position, it first overshoots to `(target − backlash)` then moves up. Set to `0` to disable. Measure your actual backlash and update this value accordingly. |
+| `--backlash` | `500` | Backlash compensation in steps. The focuser always arrives at the target from below; if the target is below the current position, it first overshoots to `(target − backlash)` then moves up. Set to `0` to disable. |
 | `--min-correction` | `50` | Minimum correction (steps) required to trigger a move **only when a backlash overshoot is needed** (target < current position). Moves in the favourable direction (target ≥ current, no overshoot) are always applied regardless of size. With TCF = −61.59 steps/°C, 50 steps ≈ 0.81 °C. Set to `0` to always move in both directions. |
 | `--move-timeout` | `60` | Seconds to wait for each focuser move to complete. |
 
 ## Backlash configuration
 
-The ZWO EAF ASCOM driver includes a built-in backlash setting, and SharpCap
-also has its own backlash compensation. To avoid double-compensation, use
-only one layer:
+The ZWO EAF ASCOM driver reports the **commanded** position, not the physical
+encoder position. This means the driver’s built-in backlash compensation and
+any optical measurement (double V-curve) are the only reliable methods.
+
+To avoid double-compensation, use only one layer:
 
 | Layer | Recommended setting | Notes |
 |---|---|---|
 | ZWO EAF ASCOM driver | **0** | Disable — let the script handle it |
 | SharpCap backlash | **0** | Disable — only affects SharpCap autofocus moves |
 | `--backlash` (this script) | **500** (default, adjust after measurement) | Script overshoots then approaches from below |
+
+> **Measuring backlash:** Use the optical double V-curve method in SharpCap
+> (run autofocus twice approaching from opposite directions and compare the
+> best-focus positions). The ZWO EAF ASCOM driver reports commanded position
+> only, so software step-counting tools yield 0 and are not useful.
 
 > **Current configuration:** ASCOM driver backlash = 0 (both EAFs), SharpCap backlash = 0.
 > The script uses `--backlash 500` by default. Measure the real backlash of
@@ -276,10 +283,10 @@ the ZWO ASCOM driver registers each unit under a different ProgID:
 
 | ProgID | Tube | Firmware | Physical travel | Focus position | Driver backlash |
 |---|---|---|---|---|---|
-| `ASCOM.EAF.Focuser` | First EAF — guide tube (50ED + ASI224MC) | 3.3.8C | 0 – 520 000 steps | ~335 000 steps | **0** |
-| `ASCOM.EAF_2.Focuser` | Second EAF — main tube (C8 + ASI2600MC Pro) | 3.3.8A | 0 – 64 264 steps *(post-reset configured range; physical end stops not yet verified)* | ~25 000 steps | **0** |
+| `ASCOM.EAF.Focuser` | First EAF — guide tube (50ED + ASI224MC) | 3.3.8C | 0 – 520 000 steps | ~335 000 steps | **0** |
+| `ASCOM.EAF_2.Focuser` | Second EAF — main tube (C8 + ASI2600MC Pro) | 3.3.8A | 0 – 64 264 steps | ~25 000 steps | **0** |
 
-> **Note:** The guide tube EAF (50ED) must have **Max Steps set to 520 000** in
+> **Note:** The guide tube EAF (50ED) must have **Max Steps set to 520 000** in
 > ASICap → Focuser → Advanced. After a firmware update or power cycle that resets
 > the counter, use **Set Current Position** (without moving the focuser) to
 > restore the correct step count before any automated run.
@@ -341,13 +348,13 @@ printed to the console. Repeat for each EAF to map all connected units.
 ## Typical workflow
 
 1. Run `detect_focusers.py` once (with both EAFs connected) to identify the correct ProgID.
-2. In your nightly sequencer (SharpCap Advanced Sequencer, NINA, SGP'Pro), add a
+2. In your nightly sequencer (SharpCap Advanced Sequencer, NINA, SGP’Pro), add a
    **Script** step after each dither block pointing to `run_focus.bat`.
    The wrapper uses `%~dp0` so it works from any installation path.
 3. The script auto-detects the state JSON, calls `sharpcap_focuser.py` to refresh it,
    reads the real EAF position and temperature, calculates the correction, and moves
    the focuser.
-4. SharpCap's `PERIODIC Refocus WHEN TEMP CHANGES BY 1` triggers a full autofocus
+4. SharpCap’s `PERIODIC Refocus WHEN TEMP CHANGES BY 1` triggers a full autofocus
    when needed — the next cycle of `focus_sequencer.py` picks up the new reference
    automatically.
 
@@ -376,7 +383,7 @@ unchanged as the original reference point.
 ## Regenerating the state JSON manually
 
 For diagnostics or a forced refresh without triggering a thermal correction,
-call `sharpcap_focuser.py` directly using the sibling repository's own Python:
+call `sharpcap_focuser.py` directly using the sibling repository’s own Python:
 
 ```bash
 ..\sharpcap-focus-temperature\.venv\Scripts\python.exe ..\sharpcap-focus-temperature\sharpcap_focuser.py
@@ -390,10 +397,10 @@ call `sharpcap_focuser.py` directly using the sibling repository's own Python:
 
 This project is licensed under the **GNU General Public License v3.0 or later**.
 
-See the `LICENSE` file for the full license text.
+See the `LICENSE.txt` file for the full license text.
 
 ## Author
 
 **David González López-Tercero**  
-Website: [https://dragonit.es](https://dragonit.es)  
+Website: [https://www.dragonit.es](https://www.dragonit.es)  
 Email: [davidglt@dragonit.es](mailto:davidglt@dragonit.es)
