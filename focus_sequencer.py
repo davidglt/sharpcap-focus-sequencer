@@ -90,6 +90,10 @@ State JSON
     only in the sharpcap-focus-temperature .venv.
     See resolve_producer_python() for the resolution logic.
 
+    The subprocess is launched with cwd set to the sibling repository root
+    so that relative paths inside sharpcap_focuser.py resolve correctly
+    regardless of where focus_sequencer.py is called from.
+
 Dry-run mode
 ------------
     In --dry-run mode the script connects to the ASCOM driver to read the
@@ -157,6 +161,27 @@ Logging
         2026-08-25 23:49:00 | START | ...
         2026-08-25 23:49:01 | ERROR | Could not read temperature: Temperature returned None — check EAF sensor
         2026-08-25 23:49:01 | END   | pos=24911 | reason=error
+
+Installation
+------------
+    Both repositories must be cloned as sibling directories under the same
+    parent folder. The exact parent path does not matter; only the sibling
+    relationship is required:
+
+        <any-parent>/
+            sharpcap-focus-sequencer/   <- this repo
+            sharpcap-focus-temperature/ <- sibling repo
+
+    Example:
+        C:\astro\sharpcap-focus-sequencer\
+        C:\astro\sharpcap-focus-temperature\
+
+    Each repository must have its own .venv created and populated:
+        cd sharpcap-focus-sequencer  && python -m venv .venv && .venv\Scripts\pip install -r requirements\requirements.txt
+        cd sharpcap-focus-temperature && python -m venv .venv && .venv\Scripts\pip install -r requirements\requirements.txt
+
+    To launch the sequencer use the provided wrapper:
+        run_focus.bat [args]
 
 Usage
 -----
@@ -323,6 +348,10 @@ def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | Non
 
     The sibling repository's .venv Python is used (resolve_producer_python)
     so that numpy/statsmodels/matplotlib are available to sharpcap_focuser.py.
+
+    cwd is set to the sibling repository root so that all relative paths
+    inside sharpcap_focuser.py resolve correctly regardless of the working
+    directory from which focus_sequencer.py was launched.
     """
     if not SHARPCAP_FOCUSER_PATH.exists():
         log.error(
@@ -331,6 +360,7 @@ def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | Non
         return None
 
     producer_python = resolve_producer_python(log)
+    sibling_root = str(SHARPCAP_FOCUSER_PATH.parent)
 
     result = subprocess.run(
         [
@@ -340,6 +370,7 @@ def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | Non
         ],
         capture_output=True,
         text=True,
+        cwd=sibling_root,
     )
 
     if result.returncode != 0:
