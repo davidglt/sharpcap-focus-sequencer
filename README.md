@@ -106,6 +106,28 @@ python -m venv .venv
 The provided `run_focus.bat` wrapper uses `%~dp0` to locate itself, so it works
 from any parent directory without any path configuration.
 
+### Windows Execution Policy
+
+By default, Windows may block scripts downloaded from the internet.
+To allow the virtual environment activation scripts and `.bat` wrappers to run,
+set the execution policy for the current user **once** from an elevated
+PowerShell prompt:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+> **What this does:** allows locally created scripts to run, and allows
+> downloaded scripts that are signed by a trusted publisher. It does **not**
+> disable Windows Defender or any other security mechanism.
+>
+> If you prefer a narrower change, you can unblock only the specific files
+> instead:
+> ```powershell
+> Unblock-File -Path C:\astro\sharpcap-focus-sequencer\run_focus.bat
+> Unblock-File -Path C:\astro\sharpcap-focus-temperature\sharpcap_focuser.py
+> ```
+
 ## State JSON location
 
 `sharpcap_focus_state.json` must live in the sibling repository
