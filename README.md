@@ -41,15 +41,17 @@ focus_target = focus_ref + TCF × (T_current − T_ref)
 
 This project is designed to work alongside
 [sharpcap-focus-temperature](https://github.com/davidglt/sharpcap-focus-temperature)
-as two **sibling repositories** cloned under the same parent folder:
+as two **sibling repositories** cloned under the same parent folder.
+The exact parent path does not matter; only the sibling relationship is required:
 
 ```
-C:\astro\
+<any-parent>\
 ├── sharpcap-focus-temperature\   ← produces sharpcap_focus_state.json
 │   ├── sharpcap_focuser.py
 │   └── sharpcap_focus_state.json  ← single source of truth
 └── sharpcap-focus-sequencer\      ← consumes sharpcap_focus_state.json
-    └── focus_sequencer.py
+    ├── focus_sequencer.py
+    └── run_focus.bat              ← single entry point
 ```
 
 **Do not copy `sharpcap_focus_state.json` into this repository.**
@@ -65,7 +67,7 @@ that silently drifts from the real model.
   └─ Imaging sequence loop:
          ├─ Capture subframes
          ├─ Dither
-         └─ Run focus_sequencer.py (via run_focus.bat)
+         └─ Run run_focus.bat (calls focus_sequencer.py)
               │
               ├─ busy check (abort if SharpCap autofocus is running)
               ├─ call sharpcap_focuser.py  ← refreshes state JSON automatically
@@ -77,6 +79,32 @@ that silently drifts from the real model.
                         └─ next cycle of focus_sequencer.py picks up the
                            new autofocus reference automatically
 ```
+
+## Installation
+
+Clone both repositories as sibling directories under the same parent folder:
+
+```bash
+cd <any-parent>
+git clone https://github.com/davidglt/sharpcap-focus-sequencer.git
+git clone https://github.com/davidglt/sharpcap-focus-temperature.git
+```
+
+Create and populate each virtual environment:
+
+```bash
+cd sharpcap-focus-sequencer
+python -m venv .venv
+.venv\Scripts\pip install -r requirements\requirements.txt
+
+cd ..
+cd sharpcap-focus-temperature
+python -m venv .venv
+.venv\Scripts\pip install -r requirements\requirements.txt
+```
+
+The provided `run_focus.bat` wrapper uses `%~dp0` to locate itself, so it works
+from any parent directory without any path configuration.
 
 ## State JSON location
 
@@ -104,7 +132,13 @@ pip install pywin32
 
 ## Usage
 
-Normal run — state JSON auto-detected from sibling repository:
+Normal run via wrapper (recommended):
+
+```bash
+run_focus.bat
+```
+
+Or directly via Python (state JSON auto-detected from sibling repository):
 
 ```bash
 python focus_sequencer.py
@@ -160,7 +194,7 @@ python focus_sequencer.py --min-correction 0    # always move in both directions
 | `--dry-run` | off | Connect to the driver, read real position and temperature, calculate the target, but do **not** move the focuser, do **not** refresh the state JSON, and do **not** update `last_temp_applied`. Use `--temp` to override the sensor reading. |
 | `--temp` | (from sensor) | Override the temperature read from the EAF sensor (°C). Requires an ASCOM connection to read the real focuser position. Useful with `--dry-run` to simulate a specific temperature scenario. |
 | `--backlash` | `500` | Backlash compensation in steps. The focuser always arrives at the target from below; if the target is below the current position, it first overshoots to `(target − backlash)` then moves up. Set to `0` to disable. Measure your actual backlash and update this value accordingly. |
-| `--min-correction` | `50` | Minimum correction (steps) required to trigger a move **only when a backlash overshoot is needed** (target < current position). Moves in the favourable direction (target ≥ current) are always applied regardless of size. With TCF = −61.59 steps/°C, 50 steps ≈ 0.81 °C. Set to `0` to always move in both directions. |
+| `--min-correction` | `50` | Minimum correction (steps) required to trigger a move **only when a backlash overshoot is needed** (target < current position). Moves in the favourable direction (target ≥ current, no overshoot) are always applied regardless of size. With TCF = −61.59 steps/°C, 50 steps ≈ 0.81 °C. Set to `0` to always move in both directions. |
 | `--move-timeout` | `60` | Seconds to wait for each focuser move to complete. |
 
 ## Backlash configuration
@@ -287,6 +321,7 @@ printed to the console. Repeat for each EAF to map all connected units.
 1. Run `detect_focusers.py` once (with both EAFs connected) to identify the correct ProgID.
 2. In your nightly sequencer (SharpCap Advanced Sequencer, NINA, SGP'Pro), add a
    **Script** step after each dither block pointing to `run_focus.bat`.
+   The wrapper uses `%~dp0` so it works from any installation path.
 3. The script auto-detects the state JSON, calls `sharpcap_focuser.py` to refresh it,
    reads the real EAF position and temperature, calculates the correction, and moves
    the focuser.
@@ -319,10 +354,10 @@ unchanged as the original reference point.
 ## Regenerating the state JSON manually
 
 For diagnostics or a forced refresh without triggering a thermal correction,
-call `sharpcap_focuser.py` directly from the command line:
+call `sharpcap_focuser.py` directly using the sibling repository's own Python:
 
 ```bash
-.venv\Scripts\python.exe ..\sharpcap-focus-temperature\sharpcap_focuser.py
+..\sharpcap-focus-temperature\.venv\Scripts\python.exe ..\sharpcap-focus-temperature\sharpcap_focuser.py
 ```
 
 ## Related

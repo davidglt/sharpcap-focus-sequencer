@@ -7,14 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- `refresh_state_json()` was invoking `sharpcap_focuser.py` with `sys.executable`,
-  i.e. the Python interpreter from the sequencer's own `.venv`.  That environment
-  only contains `pywin32` and lacks `numpy`, `statsmodels`, and `matplotlib`, which
-  `sharpcap_focuser.py` requires.  The call now uses the Python interpreter from the
-  sibling repository's `.venv` (resolved by the new `resolve_producer_python()`).
-
 ### Added
 
 - `resolve_producer_python()`: locates the Python interpreter inside the
@@ -33,9 +25,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CHANGES BY 1`) is immediately reflected in the thermal model before the next correction.
   If the refresh fails, the previously loaded state is used and the error is logged.
   Refresh is skipped in `--dry-run` mode.
+- `Installation` section added to the module docstring and README: both repositories
+  must be cloned as sibling directories under the same parent folder; the exact
+  parent path is unrestricted.
 
 ### Changed
 
+- `run_focus.bat`: rewritten to use `%~dp0` instead of a hardcoded absolute path.
+  `DIR`, `PYTHON`, and `SCRIPT` variables are now set explicitly before the call,
+  making the wrapper portable regardless of where the repositories are installed.
+  `cd /d "%DIR%"` positions the working directory at the sequencer root before
+  invoking the interpreter.
+- `refresh_state_json()`: subprocess call now passes `cwd=sibling_root` so that
+  all relative paths inside `sharpcap_focuser.py` resolve correctly regardless of
+  the working directory from which `focus_sequencer.py` was launched.
+- README: sibling-repository tree updated to show `run_focus.bat` as the single
+  entry point; `C:\astro\` example replaced with `<any-parent>\` to reflect that
+  the installation path is unrestricted; *Installation* section added;
+  *Regenerating the state JSON manually* updated to use the sibling `.venv`.
 - Busy detection: the script now checks `IsMoving` immediately after connecting and
   aborts cleanly if the focuser is already moving (e.g. SharpCap autofocus is running).
   The next scheduled cycle retries automatically.
@@ -55,6 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only in exceptional cases (e.g. a non-standard clone layout).
 - `SHARPCAP_FOCUSER_PATH` is now a single canonical constant pointing exclusively to
   `..\sharpcap-focus-temperature\sharpcap_focuser.py`. No local candidate is searched.
+
+### Fixed
+
+- `refresh_state_json()` was invoking `sharpcap_focuser.py` with `sys.executable`,
+  i.e. the Python interpreter from the sequencer's own `.venv`.  That environment
+  only contains `pywin32` and lacks `numpy`, `statsmodels`, and `matplotlib`, which
+  `sharpcap_focuser.py` requires.  The call now uses the Python interpreter from the
+  sibling repository's `.venv` (resolved by the new `resolve_producer_python()`).
 
 ### Removed
 
