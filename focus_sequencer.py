@@ -49,21 +49,29 @@ Busy detection
 
 ASCOM access
 ------------
-    ASCOM Device Hub is required to allow simultaneous access from
-    SharpCap and this script. Configure Device Hub to proxy
-    ASCOM.EAF_2.Focuser (main tube: C8 + ASI2600MC Pro, ~25 000 steps)
-    and point both clients to ASCOM.DeviceHub.Focuser.
-
     Direct ProgIDs (ZWO EAF driver, single-client only):
-        ASCOM.EAF.Focuser    -> first EAF  (guide tube: 50ED + ASI224MC,  ~335 000 steps)
-        ASCOM.EAF_2.Focuser  -> second EAF (main tube:  C8  + ASI2600MC Pro, ~25 000 steps)
+        ASCOM.EAF.Focuser    -> first EAF  (main tube:  C8  + ASI2600MC Pro, ~25 000 steps)
+        ASCOM.EAF_2.Focuser  -> second EAF (guide tube: 50ED + ASI224MC,  ~335 000 steps)
+
+    Main tube (C8 + ASI2600MC Pro):
+        ASCOM Device Hub is required to allow simultaneous access from
+        SharpCap and this script.  Configure Device Hub to proxy
+        ASCOM.EAF.Focuser and point both clients to ASCOM.DeviceHub.Focuser.
+        Use run_focus.bat (default ASCOM ID: ASCOM.DeviceHub.Focuser).
+
+    Guide tube (50ED + ASI224MC):
+        SharpCap does NOT access the guide tube EAF, so Device Hub is not
+        needed.  The script connects directly to ASCOM.EAF_2.Focuser.
+        Use run_focus_guide.bat (passes --ascom-id ASCOM.EAF_2.Focuser
+        and --state-json pointing to sharpcap_focus_state_guide.json).
 
 State JSON
 ----------
     Both the state JSON and the producer script live exclusively in the
     sibling repository sharpcap-focus-temperature:
 
-        ..\sharpcap-focus-temperature\sharpcap_focus_state.json
+        ..\sharpcap-focus-temperature\sharpcap_focus_state.json        (main tube)
+        ..\sharpcap-focus-temperature\sharpcap_focus_state_guide.json  (guide tube)
         ..\sharpcap-focus-temperature\sharpcap_focuser.py
 
     Neither file must be copied into this repository.
@@ -180,13 +188,15 @@ Installation
         cd sharpcap-focus-sequencer  && python -m venv .venv && .venv\Scripts\pip install -r requirements\requirements.txt
         cd sharpcap-focus-temperature && python -m venv .venv && .venv\Scripts\pip install -r requirements\requirements.txt
 
-    To launch the sequencer use the provided wrapper:
-        run_focus.bat [args]
+    To launch the sequencer use the provided wrappers:
+        run_focus.bat [args]               <- main tube  (C8, via Device Hub)
+        run_focus_guide.bat [args]         <- guide tube (50ED, direct ASCOM)
 
 Usage
 -----
     python focus_sequencer.py
     python focus_sequencer.py --state-json path/to/sharpcap_focus_state.json
+    python focus_sequencer.py --ascom-id "ASCOM.DeviceHub.Focuser"
     python focus_sequencer.py --ascom-id "ASCOM.EAF_2.Focuser"
     python focus_sequencer.py --dry-run
     python focus_sequencer.py --dry-run --temp 18.5
