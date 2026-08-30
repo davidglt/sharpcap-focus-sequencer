@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-30
+
+### Added
+
+- Added independent periodic thermal-focus correction jobs for the C8 main
+  tube (`sharpcap-focus-sequencer-C8`) and 50ED guide tube
+  (`sharpcap-focus-sequencer-ED50`) in both SharpCap sequences.
+- Added `STOP AT AstronomicalDawn` condition to both no-flip and
+  meridian-flip sequences.
+- Added a protected final SharpCap autofocus operation (inside
+  `SET PLATESOLVE/FOCUS SETTINGS`) before camera warm-up in both sequences.
+- Added a 30-second post-flip stagger (`DELAY 30`) before starting the
+  50ED periodic correction job in the meridian-flip sequence.
+
+### Changed
+
+- Made thermal-correction settings explicit in both wrappers:
+  `run_focus.bat` uses `--backlash 500 --min-correction 50` (C8);
+  `run_focus_guide.bat` uses `--backlash 500 --min-correction 500` (50ED).
+- Increased SharpCap autofocus search range to `-300 TO 300` steps with
+  17 samples and 500-step backlash in both sequences.
+- Added matching explicit `PERIODIC sharpcap-focus-sequencer-C8 STOP` and
+  `PERIODIC sharpcap-focus-sequencer-ED50 STOP` commands at the end of both
+  sequences.
+
+### Fixed
+
+- Fixed `refresh_state_json()` so guide-state refreshes invoke
+  `sharpcap_focuser.py --tube guide`; this prevents guide autofocus samples
+  from being filtered with C8 position limits and prevents a null
+  `model_tcf` in `sharpcap_focus_state_guide.json`.
+- Improved focus-sequencer startup logging level (`START` → `INFO`),
+  busy-state error handling, and dry-run documentation.
+- Corrected swapped tube/ProgID example in `focus_sequencer.py` docstring.
+
 ## [1.3.1] - 2026-08-30
 
 ### Fixed
@@ -72,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `README.md` — full documentation including formula, usage, options table,
   multiple EAF identification guide, typical workflow, and state JSON reference.
 
-[Unreleased]: https://github.com/davidglt/sharpcap-focus-sequencer/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/davidglt/sharpcap-focus-sequencer/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/davidglt/sharpcap-focus-sequencer/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/davidglt/sharpcap-focus-sequencer/compare/v1.0.0...v1.3.1
 [1.0.0]: https://github.com/davidglt/sharpcap-focus-sequencer/releases/tag/v1.0.0
