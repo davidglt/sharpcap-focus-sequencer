@@ -87,6 +87,12 @@ State JSON
     The --output-state-json argument is always passed explicitly so the
     producer writes to the exact file the sequencer is already reading.
 
+    The --tube argument is passed to sharpcap_focuser.py based on the
+    state JSON filename: if the filename contains "guide", --tube guide
+    is added; otherwise --tube main is used.  This ensures the correct
+    focuser position range (330 000–370 000 steps for the 50ED, 24 000–
+    27 000 steps for the C8) is applied when filtering log entries.
+
     If the refresh fails (script not found, non-zero exit code) the
     sequencer logs UPDATE FAILED and continues with the previously
     loaded state rather than aborting.
@@ -216,7 +222,7 @@ Website: https://dragonit.es
 
 Date
 ----
-2026-08-25
+2026-08-30
 
 License
 -------
@@ -362,6 +368,14 @@ def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | Non
     cwd is set to the sibling repository root so that all relative paths
     inside sharpcap_focuser.py resolve correctly regardless of the working
     directory from which focus_sequencer.py was launched.
+
+    The --tube argument is derived from the state JSON filename:
+        - filename contains "guide"  →  --tube guide  (50ED, 330 000–370 000 steps)
+        - otherwise                  →  --tube main   (C8,   24 000–27 000 steps)
+    This ensures the correct focuser position range is used when filtering
+    SharpCap log entries, preventing the guide-tube JSON from being written
+    with main-tube defaults (which would yield no matching entries and set
+    model_tcf to null).
     """
     if not SHARPCAP_FOCUSER_PATH.exists():
         log.error(
@@ -372,10 +386,15 @@ def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | Non
     producer_python = resolve_producer_python(log)
     sibling_root = str(SHARPCAP_FOCUSER_PATH.parent)
 
+    # Detect tube from the state JSON filename so the correct position range
+    # is used by sharpcap_focuser.py when filtering SharpCap log entries.
+    tube = "guide" if "guide" in state_json_path.name.lower() else "main"
+
     result = subprocess.run(
         [
             producer_python,
             str(SHARPCAP_FOCUSER_PATH),
+            "--tube", tube,
             "--output-state-json", str(state_json_path),
         ],
         capture_output=True,
@@ -548,6 +567,9 @@ def main():
     # autofocus.  The producer writes to the exact same path the sequencer
     # is reading (--output-state-json passed explicitly) so there is a
     # single source of truth in ../sharpcap-focus-temperature/.
+    # The --tube argument is derived from the state JSON filename so the
+    # correct position range is applied (guide: 330 000–370 000 steps,
+    # main: 24 000–27 000 steps).
     # On failure we log and continue with the previously loaded state.
     if not args.dry_run:
         fresh = refresh_state_json(state_json_path, log)
