@@ -97,6 +97,11 @@ State JSON
     sequencer logs UPDATE FAILED and continues with the previously
     loaded state rather than aborting.
 
+    Note: in --dry-run mode the state JSON refresh is skipped.  This
+    means a dry run may use a model that is slightly older than the
+    current session would produce.  For a fully up-to-date simulation
+    run sharpcap_focuser.py manually first.
+
     sharpcap_focuser.py is invoked using the Python interpreter from the
     sibling repository's own virtual environment (.venv), not the
     sequencer's .venv.  This is required because sharpcap_focuser.py
@@ -111,10 +116,12 @@ State JSON
 Dry-run mode
 ------------
     In --dry-run mode the script connects to the ASCOM driver to read the
-    real focuser position and temperature, but does NOT move the focuser
-    and does NOT update the state JSON. This gives an accurate simulation
-    of what the live run would do. Supply --temp to override the temperature
-    read from the driver (useful when the EAF sensor is not connected).
+    real focuser position and temperature, but does NOT move the focuser,
+    does NOT update the state JSON, and does NOT refresh the state JSON
+    from SharpCap logs.  This gives an accurate simulation of what the
+    live run would do based on the current (possibly slightly stale) model.
+    Supply --temp to override the temperature read from the driver
+    (useful when the EAF sensor is not connected).
 
 Logging
 -------
@@ -257,6 +264,12 @@ DEFAULT_MIN_CORRECTION = 50
 MOVE_TIMEOUT_S = 60
 MOVE_POLL_INTERVAL_S = 0.5
 
+# Custom log levels so the log file shows fixed-width labels.
+# START (25) sits between DEBUG (10) and INFO (20)? No — we use a value
+# above INFO so it is emitted at any standard log level ≥ INFO.
+START_LEVEL = 25  # between INFO (20) and WARNING (30)
+logging.addLevelName(START_LEVEL, "START")
+
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -292,10 +305,15 @@ def setup_logging() -> logging.Logger:
     return logger
 
 
-# Custom level names so the log file shows fixed-width labels
+# Rename standard levels to fixed-width labels used in log lines.
 logging.addLevelName(logging.INFO,    "INFO ")
 logging.addLevelName(logging.WARNING, "SKIP ")
 logging.addLevelName(logging.ERROR,   "ERROR")
+
+
+def log_start(log: logging.Logger, msg: str) -> None:
+    """Emit a START-level log line."""
+    log.log(START_LEVEL, msg)
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +376,9 @@ def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | Non
     SharpCap logs.  Returns the freshly loaded state dict on success, or
     None if the refresh could not be completed (the caller should continue
     with the previously loaded state).
+
+    Not called in --dry-run mode; see the Dry-run mode section in the
+    module docstring for implications.
 
     The producer script is located exclusively in the sibling repository
     sharpcap-focus-temperature and must NOT be copied into this repo.
@@ -466,10 +487,17 @@ def connect_focuser(ascom_id: str):
 
 
 def check_not_busy(focuser) -> bool:
+    """Return True if the focuser is ready (not moving).
+
+    Raises RuntimeError if IsMoving cannot be read, so the caller can
+    distinguish a genuine busy state from a driver/connection failure.
+    A connection failure should be treated as an error, not silently
+    skipped as if the focuser were merely busy.
+    """
     try:
         return not focuser.IsMoving
-    except Exception:
-        return False
+    except Exception as exc:
+        raise RuntimeError(f"Could not read IsMoving from focuser: {exc}") from exc
 
 
 def read_temperature(focuser) -> float:
@@ -537,8 +565,9 @@ def main():
 
     last_t_str = f"{last_t:.2f}{DEG_C}" if isinstance(last_t, float) else str(last_t)
 
-    log.info(
-        f"START | ref={timestamp_ref} | focus_ref={focus_ref} | "
+    log_start(
+        log,
+        f"ref={timestamp_ref} | focus_ref={focus_ref} | "
         f"T_ref={temp_ref:.2f}{DEG_C} | TCF={tcf:.2f} | "
         f"last_focus={last_focus} | last_T={last_t_str} | "
         f"backlash={args.backlash} | min_correction={args.min_correction}"
@@ -555,7 +584,15 @@ def main():
         sys.exit(1)
 
     # --- Busy check ---
-    if not check_not_busy(focuser):
+    try:
+        ready = check_not_busy(focuser)
+    except RuntimeError as exc:
+        log.error(f"Focuser busy check failed: {exc}")
+        log.info("END   | pos=N/A | reason=error")
+        focuser.Connected = False
+        sys.exit(1)
+
+    if not ready:
         current_position = read_position(focuser)
         log.warning("Focuser busy (IsMoving=True) — skipping this cycle, retry in 7 min")
         log.info(f"END   | pos={current_position} | reason=busy")
@@ -571,6 +608,7 @@ def main():
     # correct position range is applied (guide: 330 000–370 000 steps,
     # main: 24 000–27 000 steps).
     # On failure we log and continue with the previously loaded state.
+    # Skipped in --dry-run mode (see module docstring).
     if not args.dry_run:
         fresh = refresh_state_json(state_json_path, log)
         if fresh is not None:
