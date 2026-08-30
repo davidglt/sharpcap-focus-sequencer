@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-08-30
+
+### Fixed
+
+- **Critical bug — guide tube model silently null:** `refresh_state_json()` in
+  `focus_sequencer.py` was not passing `--tube guide` to `sharpcap_focuser.py`
+  when refreshing `sharpcap_focus_state_guide.json`.  As a result the producer
+  ran with main-tube position defaults (24 000 – 27 000 steps), no guide-tube
+  autofocus entries passed the filter, and the guide state JSON was written with
+  `model_tcf: null`, causing the sequencer to abort on the next correction cycle
+  with *"model_tcf is null"*.  The `tube` argument is now forwarded correctly.
+
 ### Added
 
 - `run_focus_guide.bat`: new wrapper for the guide tube (50ED + ASI224MC).
@@ -59,3 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environments, Python cache files, and OS files.
 - `README.md` — full documentation including formula, usage, options table,
   multiple EAF identification guide, typical workflow, and state JSON reference.
+
+[Unreleased]: https://github.com/davidglt/sharpcap-focus-sequencer/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/davidglt/sharpcap-focus-sequencer/compare/v1.0.0...v1.3.1
+[1.0.0]: https://github.com/davidglt/sharpcap-focus-sequencer/releases/tag/v1.0.0
