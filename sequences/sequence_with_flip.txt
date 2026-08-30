@@ -11,52 +11,60 @@ SEQUENCE
     GUIDING CONNECT
     BEGIN GUIDING PAUSE
         SET PLATESOLVE/FOCUS SETTINGS EXPOSURE 5
-            AUTOFOCUS OFFSET -200 TO 200 STEP COUNT 17 BACKLASH 500
+            IGNORE ERRORS FROM ONERROR RUN ""
+                AUTOFOCUS OFFSET -300 TO 300 STEP COUNT 17 BACKLASH 500
+            END IGNORE ERRORS
         END SET
     END GUIDING PAUSE
     LOG "Thermal correction: starting run_focus.bat"
     RUN C:\astro\sharpcap-focus-sequencer\run_focus.bat WITH PARAMS "" WAIT True
     LOG "Thermal correction: finished run_focus.bat"
-    PERIODIC sharpcap-focus-sequencer EVERY 420
+    PERIODIC sharpcap-focus-sequencer-C8 EVERY 420
         LOG "Thermal correction: starting run_focus.bat"
         RUN C:\astro\sharpcap-focus-sequencer\run_focus.bat WITH PARAMS "" WAIT True
         LOG "Thermal correction: finished run_focus.bat"
     END PERIODIC
-    STOP AT 4 FROM MERIDIAN
+    DELAY 30
+    PERIODIC sharpcap-focus-sequencer-ED50 EVERY 420
+        LOG "Thermal correction: starting run_focus_guide.bat"
+        RUN C:\astro\sharpcap-focus-sequencer\run_focus_guide.bat WITH PARAMS "" WAIT True
+        LOG "Thermal correction: finished run_focus_guide.bat"
+    END PERIODIC
+    STOP AT 3 FROM MERIDIAN
         STOP AT 30 FROM HORIZON
-            STOP AT 40 FROM HORIZON
-                PERIODIC Refocus WHEN TEMP CHANGES BY 1
-                    BEGIN GUIDING PAUSE
-                        SET PLATESOLVE/FOCUS SETTINGS EXPOSURE 5
-                            REFOCUS PROMPTROI False
-                        END SET
-                    END GUIDING PAUSE
-                END PERIODIC
+            STOP AT AstronomicalDawn
+                GUIDING DITHER EVERY 2 FRAMES
+                CAPTURE 70 FRAMES REQUIREGUIDING True
+                GUIDING DITHER EVERY STOP
             END STOP AT
-            GUIDING DITHER EVERY 2 FRAMES
-            CAPTURE 70 FRAMES REQUIREGUIDING True
-            GUIDING DITHER EVERY STOP
         END STOP AT
     END STOP AT
     GUIDING STOP
     SAVE MOUNT COORDINATES
     MOUNT FLIP
     GOTO SAVED COORDINATES
-    DELAY 10
+    DELAY 30
     SET PLATESOLVE/FOCUS SETTINGS EXPOSURE 5
         MOUNT SOLVEANDSYNC
-        REFOCUS PROMPTROI False
+        IGNORE ERRORS FROM ONERROR RUN ""
+            REFOCUS PROMPTROI False
+        END IGNORE ERRORS
     END SET
     GUIDING START
     DELAY 30
     STOP AT 30 FROM HORIZON
-        GUIDING DITHER EVERY 2 FRAMES
-        CAPTURE 120 FRAMES REQUIREGUIDING True
-        GUIDING DITHER EVERY STOP
+        STOP AT AstronomicalDawn
+            GUIDING DITHER EVERY 2 FRAMES
+            CAPTURE 120 FRAMES REQUIREGUIDING True
+            GUIDING DITHER EVERY STOP
+        END STOP AT
     END STOP AT
     GUIDING STOP
-    PERIODIC Refocus STOP
-    PERIODIC sharpcap-focus-sequencer STOP
+    IGNORE ERRORS FROM ONERROR RUN ""
+        REFOCUS PROMPTROI False
+    END IGNORE ERRORS
+    PERIODIC sharpcap-focus-sequencer-C8 STOP
+    PERIODIC sharpcap-focus-sequencer-ED50 STOP
     WARM UP TO 10 LIMIT 5 RATE 5 TOLERANCE 1
     SET COOLER OFF
     CAMERA CLOSE
