@@ -24,6 +24,11 @@ returning valid Position and Temperature values. If you see 0 / 0.00 for
 a focuser that should have valid readings, run the script again with
 --init-delay <seconds> (default: 1.0).
 
+Note on ProgID assignment: ProgIDs are assigned in USB enumeration order
+and can change when USB hubs or adapters are added or removed. The mapping
+below reflects the current hardware configuration but is not guaranteed to
+be stable. Always verify after any USB topology change.
+
 Usage
 -----
     python detect_focusers.py
@@ -36,13 +41,13 @@ Expected output example (two EAF units connected)
     [OK] ASCOM.EAF.Focuser
          Name        : ZWO Focuser
          Description : ZWO Focuser (1)
-         Position    : 312,540 steps   <-- guide tube (50ED + ASI224MC)
+         Position    : 25,018 steps    <-- main tube (C8 + ASI2600MC Pro)
          Temperature : 18.40 ºC
 
     [OK] ASCOM.EAF_2.Focuser
          Name        : ZWO Focuser
          Description : ZWO Focuser (2)
-         Position    : 25,041 steps    <-- main tube (C8 + ASI2600MC Pro)
+         Position    : 335,675 steps   <-- guide tube (50ED + ASI224MC)
          Temperature : 18.42 ºC
 
     [--] ASCOM.EAF_3.Focuser  ->  could not connect (COM error)
@@ -177,8 +182,11 @@ def main():
     print(f"Found {len(found)} focuser(s): {', '.join(found)}")
     print()
     print("Tip: the main tube focuser (C8 + ASI2600MC Pro) should have")
-    print("     a position around 25 000 steps -> ASCOM.EAF_2.Focuser")
-    print("     Use its ProgID as --ascom-id in focus_sequencer.py.")
+    print("     a position around 25 000 steps -> ASCOM.EAF.Focuser")
+    print("     The guide tube (50ED + ASI224MC) should have a position")
+    print("     around 335 000 steps -> ASCOM.EAF_2.Focuser")
+    print("     ProgID assignment depends on USB enumeration order — verify")
+    print("     with this script after any USB topology change.")
 
 
 if __name__ == "__main__":
