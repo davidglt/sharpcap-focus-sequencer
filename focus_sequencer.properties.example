@@ -1,0 +1,71 @@
+# =============================================================================
+# SharpCap Focus Sequencer local configuration
+# =============================================================================
+#
+# This configuration applies ONLY to the main optical tube:
+#   Celestron C8 + F/6.3 reducer + ASI2600MC Pro + main ZWO EAF.
+#
+# The guide tube uses its own thermal model and always applies a zero filter
+# offset. Do not use --filter with run_focus_guide.bat.
+#
+# The thermal regression model must be calibrated using filter position 1
+# ("Sin filtro"). The selected filter offset is added to the no-filter
+# temperature-model focus position:
+#
+#   final_target = no_filter_thermal_target + filter_offset_steps
+#
+# Valid filter positions: 1 to 7.
+# =============================================================================
+
+
+# Default filter used by the main-tube sequencer when --filter/-f is omitted.
+# Position 1 is the no-filter reference and must have offset 0.
+filter.default = 1
+
+
+# -----------------------------------------------------------------------------
+# Filter position 1: thermal-model reference
+# -----------------------------------------------------------------------------
+
+filter.1.name = Sin filtro
+filter.1.offset_steps = 0
+
+
+# -----------------------------------------------------------------------------
+# Filter position 2: Optolong dual-band nebular filter
+# -----------------------------------------------------------------------------
+#
+# The offset is added to the thermal prediction made without a filter.
+# Example:
+#   no-filter target = 18500
+#   filter 2 offset  = +500
+#   final EAF target = 19000
+# -----------------------------------------------------------------------------
+
+filter.2.name = Optolong L-eNhance Nebular
+filter.2.offset_steps = 500
+
+
+# -----------------------------------------------------------------------------
+# Reserved filter-wheel positions
+# -----------------------------------------------------------------------------
+#
+# Replace the name and offset after measuring each filter relative to
+# "Sin filtro". Positive values increase the commanded EAF position; negative
+# values decrease it.
+# -----------------------------------------------------------------------------
+
+filter.3.name = Filtro 3
+filter.3.offset_steps = 0
+
+filter.4.name = Filtro 4
+filter.4.offset_steps = 0
+
+filter.5.name = Filtro 5
+filter.5.offset_steps = 0
+
+filter.6.name = Filtro 6
+filter.6.offset_steps = 0
+
+filter.7.name = Filtro 7
+filter.7.offset_steps = 0
