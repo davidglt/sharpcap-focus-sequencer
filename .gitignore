@@ -14,8 +14,12 @@ build/
 venv/
 env/
 
-# State file (runtime artifact — do not commit)
+# State files (runtime artifacts — do not commit)
 sharpcap_focus_state.json
+sharpcap_focus_state_guide.json
+
+# Local sequencer configuration (observatory-specific — do not commit)
+focus_sequencer.properties
 
 # Logs (runtime artifacts — do not commit)
 logs/

@@ -1,422 +1,427 @@
 # SharpCap Focus Sequencer
 
-On-demand thermal focus compensator for the ZWO EAF focuser via ASCOM.
-Reads the regression model and last autofocus reference produced by
-[sharpcap-focus-temperature](https://github.com/davidglt/sharpcap-focus-temperature)
-and moves the focuser to the thermally corrected position.
+On-demand thermal focus compensator for ZWO EAF focusers via ASCOM. It reads
+the regression model and the last autofocus reference produced by
+[sharpcap-focus-temperature](https://github.com/davidglt/sharpcap-focus-temperature),
+reads the current EAF external-sensor temperature, and moves the focuser to the
+thermally compensated position.
 
-Designed to be called from a nightly sequencer (SharpCap Advanced Sequencer,
-NINA, SGP'Pro, etc.) on a periodic schedule.
+The project supports two independent optical trains:
 
-## Thermal compensation formula
+| Tube | Imaging train | Focuser | State JSON | Entry point |
+|---|---|---|---|---|
+| Main | Celestron C8 + f/6.3 reducer + ASI2600MC Pro | Main ZWO EAF via ASCOM Device Hub | `..\sharpcap-focus-temperature\sharpcap_focus_state.json` | `run_focus.bat` |
+| Guide | Sky-Watcher 50ED + ASI224MC | Second ZWO EAF, direct ASCOM | `..\sharpcap-focus-temperature\sharpcap_focus_state_guide.json` | `run_focus_guide.bat` |
+
+The main and guide tubes use separate thermal models. Filter focus offsets apply
+only to the main imaging tube.
+
+## How it works
+
+For either tube, the sequencer reads the reference autofocus position and the
+thermal compensation factor from the state JSON:
 
 ```text
-focus_target = focus_ref + TCF × (T_current − T_ref)
+base_focus_target = focus_ref + TCF × (T_current - T_ref)
 ```
 
 | Variable | Description |
 |---|---|
 | `focus_ref` | Focuser position at the reference autofocus point |
 | `T_ref` | Temperature at the reference autofocus point |
-| `T_current` | Current temperature read from the EAF external sensor |
-| `TCF` | Temperature compensation factor (steps/°C) = 1/k from the regression |
+| `T_current` | Current temperature from the EAF external sensor |
+| `TCF` | Temperature compensation factor in EAF steps per °C |
+| `base_focus_target` | Temperature-predicted focus position before a filter offset |
 
-## How it works
+For the main tube, the thermal model is always calibrated with filter position
+1, **Sin filtro**. If an imaging filter is selected, its configured offset is
+added after calculating the no-filter thermal position:
 
-1. Refreshes the state JSON automatically by calling `sharpcap_focuser.py`
-   (sibling repository) — so the latest SharpCap autofocus result is always reflected
-   before each correction.
-2. Connects to the ZWO EAF via ASCOM and reads the real focuser position and temperature.
-3. Aborts immediately if `IsMoving = True` (e.g. SharpCap autofocus is running) — the
-   next scheduled cycle will retry.
-4. Calculates the thermally compensated target position.
-5. Skips the move if the correction is below `--min-correction` **and** a backlash
-   overshoot would be needed; always moves if the target is in the favourable direction
-   (no overshoot required).
-6. Moves the focuser to that position using backlash-compensated movement (always arrives
-   from below).
-7. Updates `last_temp_applied` and `last_focus_applied` in the JSON state file.
-
-## Two-repository workflow
-
-This project is designed to work alongside
-[sharpcap-focus-temperature](https://github.com/davidglt/sharpcap-focus-temperature)
-as two **sibling repositories** cloned under the same parent folder.
-The exact parent path does not matter; only the sibling relationship is required:
-
+```text
+final_target = base_focus_target + filter_offset_steps
 ```
+
+For the guide tube, no filter offset is applied:
+
+```text
+final_target = base_focus_target
+```
+
+The final target is constrained to the ASCOM focuser limits before it is sent
+to the EAF.
+
+## Main-tube filter offsets
+
+The main tube can use filter positions 1 to 7. Filter data is loaded from the
+local `focus_sequencer.properties` file.
+
+The initial configuration is:
+
+| Position | Filter | Offset |
+|---:|---|---:|
+| 1 | Sin filtro | 0 steps |
+| 2 | Optolong L-eNhance Nebular | +500 steps |
+| 3–7 | Reserved | 0 steps until calibrated |
+
+The sign convention is:
+
+- Positive offset: increases the commanded EAF position
+- Negative offset: decreases the commanded EAF position
+
+For example, if the no-filter thermal model predicts `18,500` steps, selecting
+the Optolong L-eNhance produces:
+
+```text
+base_focus_target = 18500
+filter_offset_steps = +500
+final_target = 19000
+```
+
+### Calibrating filter offsets
+
+Use the following workflow for each imaging filter:
+
+1. Select position 1, **Sin filtro**
+2. Run SharpCap autofocus and record the focus position
+3. Insert or select the target filter
+4. Run SharpCap autofocus again
+5. Calculate:
+
+   ```text
+   filter_offset_steps = filtered_focus_position - no_filter_focus_position
+   ```
+
+6. Update `filter.N.offset_steps` in `focus_sequencer.properties`
+7. Repeat at several temperatures to confirm that the offset remains stable
+
+The model should only be trained with autofocus samples made without a filter.
+If the offset proves temperature-dependent, do not mix those measurements into
+the base model; calibrate a future per-filter temperature correction instead.
+
+## Configuration
+
+Copy the versioned template before first use:
+
+```powershell
+Copy-Item .\focus_sequencer.properties.example .\focus_sequencer.properties
+```
+
+`focus_sequencer.properties` is ignored by Git because it contains
+observatory-specific offsets. The template is committed to the repository.
+
+Example configuration:
+
+```properties
+filter.default = 1
+
+filter.1.name = Sin filtro
+filter.1.offset_steps = 0
+
+filter.2.name = Optolong L-eNhance Nebular
+filter.2.offset_steps = 500
+```
+
+- `filter.default` is used when `--filter` is omitted.
+- Valid filter positions are 1 to 7.
+- Filter 1 is the model reference and must retain offset `0`.
+- Filters are used only for the main tube.
+- `run_focus_guide.bat` does not use this file and always applies an offset of
+  `0`.
+
+## Two-repository layout
+
+Both repositories must be cloned as sibling directories. The exact parent path
+does not matter.
+
+```text
 <any-parent>\
-├── sharpcap-focus-temperature\   ← produces both state JSON files
+├── sharpcap-focus-temperature\
 │   ├── sharpcap_focuser.py
-│   ├── sharpcap_focus_state.json        ← main tube  (single source of truth)
-│   └── sharpcap_focus_state_guide.json  ← guide tube (single source of truth)
-└── sharpcap-focus-sequencer\      ← consumes both state JSON files
+│   ├── sharpcap_focus_state.json
+│   └── sharpcap_focus_state_guide.json
+└── sharpcap-focus-sequencer\
     ├── focus_sequencer.py
-    ├── run_focus.bat              ← main tube  (C8, via Device Hub)
-    └── run_focus_guide.bat        ← guide tube (50ED, direct ASCOM)
+    ├── focus_sequencer.properties.example
+    ├── focus_sequencer.properties
+    ├── run_focus.bat
+    └── run_focus_guide.bat
 ```
 
-**Do not copy the state JSON files into this repository.**
-They are generated by `sharpcap_focuser.py` and must always be read
-from their original location. Copying them would create stale duplicates
-that silently drift from the real models.
+Do not copy the state JSON files into this repository. They are generated and
+maintained by `sharpcap_focuser.py` in the sibling
+`sharpcap-focus-temperature` repository.
 
-### Nightly imaging loop
+## Focus cycle
 
-```
-[New night]
-  │
-  ├─ Focus guide tube once at session start:
-  │       run_focus_guide.bat        (direct ASCOM.EAF_2.Focuser)
-  │
-  └─ Main tube imaging sequence loop:
-         ├─ Capture subframes
-         ├─ Dither
-         └─ Run run_focus.bat (calls focus_sequencer.py)
-              │
-              ├─ busy check (abort if SharpCap autofocus is running)
-              ├─ call sharpcap_focuser.py  ← refreshes main tube state JSON
-              └─ apply thermal correction to main tube
-                   │
-                   (repeat every 7 min)
-                   │
-                   └─ SharpCap PERIODIC Refocus at ΔT = 1 °C
-                        └─ next cycle picks up the new reference automatically
-```
+Each non-dry-run execution follows this sequence:
+
+1. Loads the filter configuration for the main tube, or uses a zero offset for
+   the guide tube
+2. Loads the previous focus state from the corresponding sibling-repository
+   JSON file
+3. Connects to the requested ASCOM focuser
+4. Stops without moving if `IsMoving=True`, so it never interferes with a
+   SharpCap autofocus operation
+5. Refreshes the state JSON from the latest SharpCap autofocus logs
+6. Reads the EAF temperature and current focuser position
+7. Calculates the thermal target
+8. Adds the selected main-tube filter offset, if applicable
+9. Applies ASCOM position limits
+10. Moves with backlash compensation when required
+11. Stores the last temperature and final physical target in the state JSON
+
+Dry-run mode does not refresh the state JSON and never moves the EAF.
 
 ## Installation
 
-Clone both repositories as sibling directories under the same parent folder:
-
-```bash
-cd <any-parent>
-git clone https://github.com/davidglt/sharpcap-focus-sequencer.git
-git clone https://github.com/davidglt/sharpcap-focus-temperature.git
-```
-
-Create and populate each virtual environment:
-
-```bash
-cd sharpcap-focus-sequencer
-python -m venv .venv
-.venv\Scripts\pip install -r requirements\requirements.txt
-
-cd ..
-cd sharpcap-focus-temperature
-python -m venv .venv
-.venv\Scripts\pip install -r requirements\requirements.txt
-```
-
-The provided wrapper scripts use `%~dp0` to locate themselves, so they work
-from any parent directory without any path configuration.
-
-### Windows Execution Policy
-
-By default, Windows may block scripts downloaded from the internet.
-To allow the virtual environment activation scripts and `.bat` wrappers to run,
-set the execution policy for the current user **once** from an elevated
-PowerShell prompt:
+Clone both repositories:
 
 ```powershell
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+cd C:\astro
+git clone [https://github.com/davidglt/sharpcap-focus-sequencer.git](https://github.com/davidglt/sharpcap-focus-sequencer.git)
+git clone [https://github.com/davidglt/sharpcap-focus-temperature.git](https://github.com/davidglt/sharpcap-focus-temperature.git)
 ```
 
-> **What this does:** allows locally created scripts to run, and allows
-> downloaded scripts that are signed by a trusted publisher. It does **not**
-> disable Windows Defender or any other security mechanism.
->
-> If you prefer a narrower change, you can unblock only the specific files
-> instead:
-> ```powershell
-> Unblock-File -Path C:\astro\sharpcap-focus-sequencer\run_focus.bat
-> Unblock-File -Path C:\astro\sharpcap-focus-sequencer\run_focus_guide.bat
-> Unblock-File -Path C:\astro\sharpcap-focus-temperature\sharpcap_focuser.py
-> ```
+Create a virtual environment for each repository:
 
-## State JSON location
+```powershell
+cd C:\astro\sharpcap-focus-sequencer
+python -m venv .venv
+.\.venv\Scripts\pip install -r .\requirements\requirements.txt
 
-Both state JSON files live in the sibling repository `sharpcap-focus-temperature`.
-The sequencer always reads from and writes to:
+cd C:\astro\sharpcap-focus-temperature
+python -m venv .venv
+.\.venv\Scripts\pip install -r .\requirements\requirements.txt
+```
 
-| Tube | State JSON | Entry point |
-|---|---|---|
-| Main (C8 + ASI2600MC Pro) | `..\sharpcap-focus-temperature\sharpcap_focus_state.json` | `run_focus.bat` |
-| Guide (50ED + ASI224MC) | `..\sharpcap-focus-temperature\sharpcap_focus_state_guide.json` | `run_focus_guide.bat` |
+Create the local main-tube configuration:
 
-Use `--state-json <path>` only in exceptional cases (e.g. a non-standard
-clone layout). Do not copy the files into this repository.
+```powershell
+cd C:\astro\sharpcap-focus-sequencer
+Copy-Item .\focus_sequencer.properties.example .\focus_sequencer.properties
+```
 
 ## Requirements
 
-- Python 3.10 or newer.
-- Windows (ASCOM platform required).
-- [ASCOM Platform](https://ascom-standards.org/) installed.
-- ZWO EAF ASCOM driver installed.
+- Windows 10 or Windows 11
+- Python 3.10 or later
+- [ASCOM Platform](https://ascom-standards.org/)
+- ZWO EAF ASCOM driver
 - `pywin32`
+- A sibling `sharpcap-focus-temperature` installation with an available state
+  JSON and virtual environment
 
-```bash
+Install the Python dependency:
+
+```powershell
 pip install pywin32
 ```
 
+## ASCOM access
+
+### Main tube
+
+SharpCap and the script can require simultaneous access to the main ZWO EAF.
+Use **ASCOM Device Hub** as the shared proxy:
+
+```text
+ASCOM.DeviceHub.Focuser
+```
+
+Configure Device Hub to proxy the main ZWO EAF driver, usually
+`ASCOM.EAF.Focuser`, and configure SharpCap and the sequencer to use Device
+Hub.
+
+### Guide tube
+
+SharpCap does not access the guide-tube EAF, so it may be accessed directly:
+
+```text
+ASCOM.EAF_2.Focuser
+```
+
+The exact ZWO ASCOM ProgID can change when USB device enumeration changes.
+Use `detect_focusers.py` after modifying USB hubs, adapters, cabling or power
+order.
+
 ## Usage
 
-Normal run via wrappers (recommended):
+### Main tube
 
-```bash
-run_focus.bat              # main tube  — C8, via Device Hub
-run_focus_guide.bat        # guide tube — 50ED, direct ASCOM
+Normal execution; filter 1, **Sin filtro**, is used by default:
+
+```powershell
+run_focus.bat
 ```
 
-Or directly via Python:
+Explicit no-filter operation:
 
-```bash
-python focus_sequencer.py                                        # main tube (default)
-python focus_sequencer.py --ascom-id "ASCOM.EAF_2.Focuser" \    # guide tube (direct)
-    --state-json "..\sharpcap-focus-temperature\sharpcap_focus_state_guide.json"
+```powershell
+run_focus.bat --filter 1
 ```
 
-Dry run (connects to the driver, reads real position and temperature, calculates
-the target, but does **not** move the focuser and does **not** update the state JSON):
+Optolong L-eNhance Nebular:
 
-```bash
-run_focus.bat --dry-run
+```powershell
+run_focus.bat --filter 2
+```
+
+Dry-run with the Optolong filter:
+
+```powershell
+run_focus.bat --filter 2 --dry-run
+```
+
+Dry-run at an explicitly simulated temperature:
+
+```powershell
+run_focus.bat --filter 2 --dry-run --temp 18.5
+```
+
+### Guide tube
+
+The guide tube never uses a filter offset:
+
+```powershell
+run_focus_guide.bat
 run_focus_guide.bat --dry-run
 ```
 
-Dry run with temperature override:
+Do not pass `--filter` to `run_focus_guide.bat`. Filter offsets are exclusive
+to the C8 main imaging train.
 
-```bash
-run_focus.bat --dry-run --temp 18.5
+### Direct Python execution
+
+Main tube:
+
+```powershell
+python .\focus_sequencer.py
+python .\focus_sequencer.py --filter 2
+python .\focus_sequencer.py --config .\focus_sequencer.properties --filter 2
 ```
 
-Custom backlash value (or disable entirely):
+Guide tube:
 
-```bash
-run_focus.bat --backlash 300
-run_focus.bat --backlash 0   # disable backlash compensation
-```
-
-Custom minimum correction threshold for backlash direction:
-
-```bash
-run_focus.bat --min-correction 50   # default
-run_focus.bat --min-correction 0    # always move in both directions
+```powershell
+python .\focus_sequencer.py `
+  --ascom-id "ASCOM.EAF_2.Focuser" `
+  --state-json "..\sharpcap-focus-temperature\sharpcap_focus_state_guide.json"
 ```
 
 ## Command-line options
 
 | Option | Default | Description |
 |---|---|---|
-| `--state-json` | auto-detected | Path to the JSON state file produced by `sharpcap_focuser.py`. If omitted, uses the canonical sibling-repository path. |
-| `--ascom-id` | `ASCOM.DeviceHub.Focuser` | ASCOM ProgID of the focuser driver. |
-| `--dry-run` | off | Connect to the driver, read real position and temperature, calculate the target, but do **not** move the focuser, do **not** refresh the state JSON, and do **not** update `last_temp_applied`. Use `--temp` to override the sensor reading. |
-| `--temp` | (from sensor) | Override the temperature read from the EAF sensor (°C). Requires an ASCOM connection to read the real focuser position. Useful with `--dry-run` to simulate a specific temperature scenario. |
-| `--backlash` | `500` | Backlash compensation in steps. The focuser always arrives at the target from below; if the target is below the current position, it first overshoots to `(target − backlash)` then moves up. Set to `0` to disable. |
-| `--min-correction` | `50` | Minimum correction (steps) required to trigger a move **only when a backlash overshoot is needed** (target < current position). Moves in the favourable direction (target ≥ current, no overshoot) are always applied regardless of size. With TCF = −61.59 steps/°C, 50 steps ≈ 0.81 °C. Set to `0` to always move in both directions. |
-| `--move-timeout` | `60` | Seconds to wait for each focuser move to complete. |
+| `--state-json PATH` | Auto-detected main state file | State JSON produced by `sharpcap_focuser.py`; use a guide-state path for the guide tube |
+| `--ascom-id PROGID` | `ASCOM.DeviceHub.Focuser` | ASCOM focuser ProgID |
+| `--config PATH` | `focus_sequencer.properties` beside the script | Main-tube filter configuration file |
+| `--filter`, `-f` | `filter.default` | Main-tube target filter position from 1 to 7 |
+| `--dry-run` | Off | Reads state, position and temperature but does not refresh state or move the EAF |
+| `--temp DEGREES` | EAF sensor reading | Temperature override, useful for dry-run testing |
+| `--backlash STEPS` | `500` | Backlash compensation. Use `0` to disable |
+| `--min-correction STEPS` | `50` | Minimum correction applied only when a backlash overshoot is required |
+| `--move-timeout SECONDS` | `60` | Timeout for each EAF move |
 
-## Backlash configuration
+## Backlash compensation
 
-The ZWO EAF ASCOM driver reports the **commanded** position, not the physical
-encoder position. This means the driver's built-in backlash compensation and
-any optical measurement (double V-curve) are the only reliable methods.
+The sequencer always approaches a target from below when backlash compensation
+is active. With the C8 setup, increasing focuser step numbers correspond to an
+outward movement.
 
-To avoid double-compensation, use only one layer:
+If the desired target is below the current position:
 
-| Layer | Recommended setting | Notes |
-|---|---|---|
-| ZWO EAF ASCOM driver | **0** | Disable — let the script handle it |
-| SharpCap backlash | **0** | Disable — only affects SharpCap autofocus moves |
-| `--backlash` (this script) | **500** (default, adjust after measurement) | Script overshoots then approaches from below |
+1. Move to `target - backlash`
+2. Move outward to `target`
 
-> **Measuring backlash:** Use the optical double V-curve method in SharpCap
-> (run autofocus twice approaching from opposite directions and compare the
-> best-focus positions). The ZWO EAF ASCOM driver reports commanded position
-> only, so software step-counting tools yield 0 and are not useful.
+This ensures a repeatable final approach direction.
 
-> **Current configuration:** ASCOM driver backlash = 0 (both EAFs), SharpCap backlash = 0.
-> The script uses `--backlash 500` by default. Measure the real backlash of
-> your setup and update this value. Typical values for a well-adjusted EAF
-> on a C8 are 100–300 steps.
+Use only one layer of backlash compensation:
 
-## Busy detection
+| Layer | Recommended setting |
+|---|---|
+| ZWO EAF ASCOM driver | `0` |
+| SharpCap backlash | `0` |
+| `--backlash` in this sequencer | `500` initially; refine after measurement |
 
-The script checks `IsMoving` immediately after connecting. If the focuser is
-already moving (e.g. SharpCap is running an autofocus), the script logs a
-warning and exits cleanly without touching the focuser:
+The EAF driver reports commanded position rather than a physical encoder
+measurement. Determine backlash with an optical method, such as SharpCap
+double V-curves approached from opposite directions.
 
+## Logging
+
+Logs are written to:
+
+```text
+logs\YYYYMMDD_focus_sequencer.log
 ```
-2026-08-25 23:21:00 | INFO  | START | ...
-2026-08-25 23:21:01 | WARN  | SKIP  | Focuser busy (IsMoving=True) — skipping this cycle, retry in 7 min
-2026-08-25 23:21:01 | INFO  | END   | pos=24911 | reason=busy
+
+A main-tube L-eNhance correction can look like:
+
+```text
+2026-09-21 23:15:02 | INFO  | T=12.30°C | dT=-1.10°C | TCF=-61.59 |
+filter=2 (Optolong L-eNhance Nebular) | filter_offset=+500 |
+base_target=18500 | target=19000 | pos=18920 | correction=+80 |
+backlash=False | final=19000
 ```
 
-The next scheduled execution (7 minutes later by default in the SharpCap
-sequencer) will retry normally.
+For the guide tube, the log records a zero offset:
 
-## Minimum correction threshold
+```text
+tube=guide | filter=N/A | filter_offset=+0 | base_target=345000 | target=345000
+```
 
-Small thermal corrections in the unfavourable direction (focuser must move
-**inward**, requiring a backlash overshoot) are skipped when the correction
-is smaller than `--min-correction`. This avoids unnecessary double moves
-(overshoot + return) for insignificant corrections.
+## Typical nightly workflow
 
-Corrections in the **favourable direction** (focuser moves **outward** — the
-normal direction during a cooling night) are **always applied**, regardless
-of size. This keeps the focus continuously well-corrected with small,
-frequent adjustments instead of accumulating drift.
-
-| `--min-correction` | Thermal equivalent (TCF = −61.59 steps/°C) | When to use |
-|---|---|---|
-| 20 | ~0.32 °C | Very sensitive, moves almost always |
-| **50** *(default)* | **~0.81 °C** | Balanced — recommended |
-| 100 | ~1.62 °C | Conservative, only large corrections |
+1. Start the imaging session and ensure both EAF units are connected.
+2. With the C8 in filter position 1, **Sin filtro**, run SharpCap autofocus.
+3. Change the main imaging train to the desired capture filter.
+4. Start capture.
+5. Run `run_focus.bat --filter 2` periodically for L-eNhance imaging, for
+   example after a dither block or at a scheduled interval.
+6. SharpCap may perform a full autofocus after its configured temperature
+   change. The next sequencer cycle refreshes the state JSON and adopts the
+   updated reference automatically.
+7. Run `run_focus_guide.bat` independently for the guide tube if needed; it
+   uses no filter offset.
 
 ## Multiple EAF units
 
-If you have more than one ZWO EAF connected (e.g. main tube + guide tube),
-the ZWO ASCOM driver registers each unit under a different ProgID:
+With two ZWO EAF focusers, ASCOM ProgIDs are assigned by the ZWO driver in USB
+enumeration order. Verify each device after hardware changes:
 
-| ProgID | Tube | Firmware | Physical travel | Focus position | Driver backlash |
-|---|---|---|---|---|---|
-| `ASCOM.EAF.Focuser` | First EAF — main tube (C8 + ASI2600MC Pro) | 3.3.8A | 0 – 64 264 steps | ~25 000 steps | **0** |
-| `ASCOM.EAF_2.Focuser` | Second EAF — guide tube (50ED + ASI224MC) | 3.3.8C | 0 – 520 000 steps | ~335 000 steps | **0** |
-
-> **Note on ProgID assignment:** ASCOM ProgIDs are assigned by the ZWO driver
-> in USB enumeration order and can change when USB hubs or adapters are added
-> or removed (e.g. adding a CH341T USB-serial adapter). Always verify with
-> `detect_focusers.py` after any USB topology change.
-
-> **Note:** The guide tube EAF (50ED) must have **Max Steps set to 520 000** in
-> ASICap → Focuser → Advanced. After a firmware update or power cycle that resets
-> the counter, use **Set Current Position** (without moving the focuser) to
-> restore the correct step count before any automated run.
-
-### ASCOM access per tube
-
-| Tube | ProgID | Access mode | Reason |
-|---|---|---|---|
-| Main (C8 + ASI2600MC Pro) | `ASCOM.DeviceHub.Focuser` | Via **ASCOM Device Hub** | SharpCap and this script both need simultaneous access. Configure Device Hub to proxy `ASCOM.EAF.Focuser`. |
-| Guide (50ED + ASI224MC) | `ASCOM.EAF_2.Focuser` | **Direct** | SharpCap does not access the guide tube EAF. Device Hub is not needed. |
-
-### Identifying ProgIDs with detect_focusers.py
-
-With both EAF units connected, run:
-
-```bash
-python detect_focusers.py
+```powershell
+python .\detect_focusers.py
 ```
 
-This probes `ASCOM.EAF.Focuser` through `ASCOM.EAF_5.Focuser` and prints
-the `Name`, `Position`, and `Temperature` of each unit that responds:
+Typical output:
 
-```
-Probing ASCOM focuser ProgIDs...
-
+```text
 [OK] ASCOM.EAF.Focuser
-     Name        : ZWO Focuser
-     Description : ZWO Focuser (1)
-     Position    : 25,018 steps    <-- main tube
-     Temperature : 27.16 °C
+     Position    : 18,700 steps
+     Temperature : 18.40°C
 
 [OK] ASCOM.EAF_2.Focuser
-     Name        : ZWO Focuser
-     Description : ZWO Focuser (2)
-     Position    : 335,675 steps   <-- guide tube
-     Temperature : 26.60 °C
+     Position    : 345,000 steps
+     Temperature : 18.10°C
 ```
 
-### Identifying ProgIDs with the ASCOM Chooser (alternative)
+The guide EAF must have the correct maximum travel configured in ASICap. After
+a firmware update, reset or accidental position-counter change, restore its
+coordinate system before allowing automated movement.
 
-If `detect_focusers.py` does not find your device, use the ASCOM Chooser
-directly to discover the exact ProgID registered on your system:
+## Related project
 
-```python
-import win32com.client
-
-chooser = win32com.client.Dispatch("ASCOM.Utilities.Chooser")
-chooser.DeviceType = "Focuser"
-prog_id = chooser.Choose("")
-
-print(f"ProgID: '{prog_id}'")
-
-if prog_id:
-    f = win32com.client.Dispatch(prog_id)
-    f.Connected = True
-    print(f"Name       : {f.Name}")
-    print(f"Position   : {f.Position}")
-    print(f"Temperature: {f.Temperature}")
-    f.Connected = False
-```
-
-This opens the ASCOM Chooser window — select the desired EAF and click **OK**
-(not the X button). The ProgID, current position, and temperature will be
-printed to the console. Repeat for each EAF to map all connected units.
-
-## Typical workflow
-
-1. Run `detect_focusers.py` once (with both EAFs connected) to identify the correct ProgIDs.
-2. **Guide tube:** at the start of each night, run `run_focus_guide.bat` once to apply
-   the thermally compensated starting position for the 50ED.
-3. **Main tube:** in your nightly sequencer (SharpCap Advanced Sequencer, NINA, SGP'Pro),
-   add a **Script** step after each dither block pointing to `run_focus.bat`.
-   The wrapper uses `%~dp0` so it works from any installation path.
-4. The script auto-detects the state JSON, calls `sharpcap_focuser.py` to refresh it,
-   reads the real EAF position and temperature, calculates the correction, and moves
-   the focuser.
-5. SharpCap's `PERIODIC Refocus WHEN TEMP CHANGES BY 1` triggers a full autofocus
-   when needed — the next cycle of `focus_sequencer.py` picks up the new reference
-   automatically.
-
-## State JSON
-
-This script reads and updates the state JSON files in-place
-in `..\sharpcap-focus-temperature\`.
-
-Main tube example:
-
-```json
-{
-  "timestamp_ref": "2026-08-24 23:11:32",
-  "temp_ref": 18.4,
-  "focus_ref": 25342,
-  "last_temp_applied": 17.1,
-  "last_focus_applied": 25422,
-  "model_tcf": -61.59,
-  "model_inv_tcf": -0.016237,
-  "model_intercept_c": 432.939
-}
-```
-
-After each run, `last_temp_applied` and `last_focus_applied` are updated to
-reflect the correction just applied, while `focus_ref` and `temp_ref` remain
-unchanged as the original reference point.
-
-## Regenerating the state JSON manually
-
-For diagnostics or a forced refresh without triggering a thermal correction,
-call `sharpcap_focuser.py` directly using the sibling repository's own Python:
-
-```bash
-# Main tube
-..\sharpcap-focus-temperature\.venv\Scripts\python.exe ..\sharpcap-focus-temperature\sharpcap_focuser.py
-
-# Guide tube
-..\sharpcap-focus-temperature\.venv\Scripts\python.exe ..\sharpcap-focus-temperature\sharpcap_focuser.py --tube guide
-```
-
-## Related
-
-- [sharpcap-focus-temperature](https://github.com/davidglt/sharpcap-focus-temperature) — extracts autofocus data from SharpCap logs and fits the thermal regression model.
+- [sharpcap-focus-temperature](https://github.com/davidglt/sharpcap-focus-temperature):
+  extracts SharpCap autofocus data, filters valid samples and produces the
+  temperature regression and state JSON consumed by this sequencer.
 
 ## License
 
 This project is licensed under the **GNU General Public License v3.0 or later**.
-
-See the `LICENSE.txt` file for the full license text.
+See `LICENSE.txt`.
 
 ## Author
 
-**David González López-Tercero**  
-Website: [https://dragonit.es](https://dragonit.es)  
-Email: [davidglt@dragonit.es](mailto:davidglt@dragonit.es)
+David González López-Tercero  
+[https://dragonit.es](https://dragonit.es)  
+[davidglt@dragonit.es](mailto:davidglt@dragonit.es)
