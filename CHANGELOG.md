@@ -10,14 +10,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Added
 
 - Added `focus_sequencer.properties.example` as the versioned template for
-  local sequencer configuration.
+  local main-tube sequencer configuration.
 - Added configurable filter focus offsets for main-tube filter positions 1
   through 7.
 - Added `--config PATH` to select an alternative main-tube sequencer
   properties file.
 - Added `--filter POSITION` and `-f POSITION` to select the main-tube target
   filter position.
-- Added main-tube filter position 1, `Sin filtro`, as the default thermal-model
+- Added main-tube filter position 1, `No filter`, as the default thermal-model
   reference with an offset of `0` EAF steps.
 - Added main-tube filter position 2, `Optolong L-eNhance Nebular`, with an
   initial configurable offset of `+500` EAF steps.
@@ -35,12 +35,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   final_target = base_target + filter_offset_steps
   ```
 
-- The temperature model remains referenced to autofocus measurements made with
-  main-tube filter position 1, `Sin filtro`.
-- `last_focus_applied` now records the final physical EAF target, including the
+- The thermal model remains referenced to autofocus measurements made with
+  main-tube filter position 1, `No filter`.
+- `last_focus_applied` records the final physical EAF target, including the
   main-tube filter offset.
 - Filter offsets apply only to the C8 main imaging train. The 50ED guide tube
-  always uses a zero filter offset and does not accept filter selection.
+  always uses a zero filter offset and rejects `--filter` and `--config`.
 - Rebuilt this changelog as a sequencer-specific history after removing
   unrelated content from `sharpcap-focus-temperature`.
 
@@ -56,7 +56,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   `ASCOM.EAF_2.Focuser` and `sharpcap_focus_state_guide.json`.
 - Added `detect_focusers.py` to identify available ZWO EAF ASCOM ProgIDs,
   positions and sensor temperatures.
-- Added automatic refresh of the focus state JSON by invoking the sibling
+- Added automatic state JSON refresh by invoking the sibling
   `sharpcap_focuser.py` before each non-dry-run correction.
 - Added automatic producer-interpreter discovery, using the sibling
   `sharpcap-focus-temperature` virtual environment when available.
@@ -161,7 +161,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
-- Initial release of the SharpCap Focus Sequencer.
+- Initial release of SharpCap Focus Sequencer.
 - Reads a thermal focus model and autofocus reference from
   `sharpcap_focus_state.json`.
 - Reads the current external-sensor temperature from a ZWO EAF through ASCOM.

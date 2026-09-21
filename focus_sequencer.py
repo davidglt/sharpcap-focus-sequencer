@@ -11,66 +11,48 @@ sharpcap-focus-temperature (sharpcap_focus_state.json), queries the
 current temperature from the ZWO EAF external sensor via ASCOM, and
 moves the focuser to the thermally compensated position.
 
-The thermal model must be calibrated with filter position 1, "Sin filtro".
-For a selected capture filter, the sequencer adds its configured focus
-offset to the reference no-filter position:
+The thermal model for the main tube must be calibrated with filter position 1,
+"No filter". A selected main-tube capture filter contributes its configured
+focus offset to the no-filter thermal target:
 
     base_focus_target = focus_ref + TCF * (T_current - T_ref)
-    focus_target = base_focus_target + filter_offset_steps
+    final_focus_target = base_focus_target + filter_offset_steps
 
-Filter definitions and offsets are loaded from focus_sequencer.properties.
+Filter offsets apply only to the main optical tube:
+
+    Main tube:  Celestron C8 + F/6.3 reducer + ASI2600MC Pro + ZWO EAF
+    Guide tube: Sky-Watcher 50ED + ASI224MC + second ZWO EAF
+
+The guide tube uses its own thermal model and always applies a zero filter
+offset. Supplying --filter for a guide-tube state JSON is an error.
+
+Main-tube filter definitions are loaded from focus_sequencer.properties.
 Copy focus_sequencer.properties.example to focus_sequencer.properties and
-adjust it for the local observatory. The default selected filter is read from
-filter.default unless --filter / -f is supplied.
-
-Formula
--------
-    base_focus_target = focus_ref + TCF * (T_current - T_ref)
-    focus_target      = base_focus_target + filter_offset_steps
-
-Where:
-    focus_ref          = focuser position at the reference autofocus point,
-                         always measured without a filter
-    T_ref              = temperature at the reference autofocus point
-    T_current          = current temperature read from the EAF sensor
-    TCF                = temperature compensation factor (steps / °C)
-    filter_offset_steps = selected filter focus offset in EAF steps
+adjust the filter names and offsets for the local observatory.
 
 Backlash compensation
 ---------------------
-To eliminate backlash, the focuser always arrives at the target from below
-(increasing step numbers = outward direction on C8 + F/6.3). If the target
-is below the current position, the script first moves to
-(target - backlash_steps) and then moves up to the target.
+The focuser always arrives at the target from below. If the target is below
+the current position, the script moves to (target - backlash_steps) and then
+moves outward to the target. Set --backlash 0 to disable compensation.
 
 Minimum correction threshold
 -----------------------------
 The --min-correction threshold applies only when a backlash overshoot would
-be needed (target < current_position). When no backlash is needed
-(target >= current_position), the script always moves, even if the correction
-is tiny.
+be needed. When no backlash is needed, the script always moves to keep focus
+continuously corrected without accumulating drift.
 
 Busy detection
 --------------
-If the focuser is already moving when the script connects (for example while
-SharpCap is running autofocus), the script exits cleanly without moving it.
-
-ASCOM access
-------------
-Main tube:
-    ASCOM.DeviceHub.Focuser
-    Use Device Hub so SharpCap and this script can access the main EAF.
-
-Guide tube:
-    ASCOM.EAF_2.Focuser
-    Direct access is suitable when SharpCap does not use the guide EAF.
+If the focuser is already moving after connection, for example because
+SharpCap is running autofocus, the script exits without moving the focuser.
+A scheduled sequencer can retry later.
 
 State JSON
 ----------
-Both the state JSON and the producer script remain exclusively in the sibling
-repository sharpcap-focus-temperature. Before each non-dry run, the sequencer
-refreshes that state JSON from the latest SharpCap logs after checking that the
-focuser is not busy.
+Both the state JSON and sharpcap_focuser.py belong to the sibling repository
+sharpcap-focus-temperature. Before each non-dry run, this script refreshes the
+selected state JSON from current SharpCap logs after the focuser busy check.
 
 Usage
 -----
@@ -95,7 +77,18 @@ from pathlib import Path
 
 DEG_C = "°C"
 DELTA = "d"
+
 STATE_JSON_FILENAME = "sharpcap_focus_state.json"
+DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
+DEFAULT_BACKLASH_STEPS = 500
+DEFAULT_MIN_CORRECTION = 50
+MOVE_TIMEOUT_S = 60
+MOVE_POLL_INTERVAL_S = 0.5
+
+DEFAULT_CONFIG_FILENAME = "focus_sequencer.properties"
+EXAMPLE_CONFIG_FILENAME = "focus_sequencer.properties.example"
+MIN_FILTER_POSITION = 1
+MAX_FILTER_POSITION = 7
 
 SHARPCAP_FOCUSER_PATH = (
     Path(__file__).resolve().parent.parent
@@ -109,24 +102,16 @@ STATE_JSON_PATH = (
     / STATE_JSON_FILENAME
 )
 
-DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
-DEFAULT_BACKLASH_STEPS = 500
-DEFAULT_MIN_CORRECTION = 50
-MOVE_TIMEOUT_S = 60
-MOVE_POLL_INTERVAL_S = 0.5
-
-DEFAULT_CONFIG_FILENAME = "focus_sequencer.properties"
-EXAMPLE_CONFIG_FILENAME = "focus_sequencer.properties.example"
-MIN_FILTER_POSITION = 1
-MAX_FILTER_POSITION = 7
-
 START_LEVEL = 25
 logging.addLevelName(START_LEVEL, "START")
+logging.addLevelName(logging.INFO, "INFO ")
+logging.addLevelName(logging.WARNING, "SKIP ")
+logging.addLevelName(logging.ERROR, "ERROR")
 
 
 @dataclass(frozen=True)
 class FilterDefinition:
-    """A configured filter-wheel position and its focus offset."""
+    """A main-tube filter-wheel position and its focus offset."""
 
     position: int
     name: str
@@ -135,7 +120,7 @@ class FilterDefinition:
 
 @dataclass(frozen=True)
 class SequencerConfig:
-    """Configuration loaded from the local properties file."""
+    """Main-tube filter configuration loaded from a properties file."""
 
     source_path: Path
     default_filter: int
@@ -150,48 +135,57 @@ class SequencerConfig:
             ) from exc
 
 
+@dataclass(frozen=True)
+class ActiveFilter:
+    """Filter context used by one sequencer execution."""
+
+    position: int | None
+    name: str
+    offset_steps: int
+    applies_to_main_tube: bool
+
+    @property
+    def label(self) -> str:
+        if self.position is None:
+            return self.name
+        return f"{self.position} ({self.name})"
+
+
 # ---------------------------------------------------------------------------
-# Logging setup
+# Logging
 # ---------------------------------------------------------------------------
 
 def setup_logging() -> logging.Logger:
-    """Configure and return the module logger.
-
-    Appends to logs/YYYYMMDD_focus_sequencer.log and also writes to stdout.
-    """
+    """Create the daily file logger and a stdout handler."""
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(exist_ok=True)
 
-    log_filename = log_dir / f"{datetime.now().strftime('%Y%m%d')}_focus_sequencer.log"
-
-    fmt = "%(asctime)s | %(levelname)-5s | %(message)s"
-    datefmt = "%Y-%m-%d %H:%M:%S"
+    log_path = log_dir / f"{datetime.now().strftime('%Y%m%d')}_focus_sequencer.log"
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)-5s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
     logger = logging.getLogger("focus_sequencer")
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
     logger.propagate = False
 
-    file_handler = logging.FileHandler(log_filename, mode="a", encoding="utf-8")
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+    file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.DEBUG)
-    console_handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+    console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
     return logger
 
 
-logging.addLevelName(logging.INFO, "INFO ")
-logging.addLevelName(logging.WARNING, "SKIP ")
-logging.addLevelName(logging.ERROR, "ERROR")
-
-
 def log_start(log: logging.Logger, message: str) -> None:
-    """Emit a START-level log line."""
+    """Emit a START-level log message."""
     log.log(START_LEVEL, message)
 
 
@@ -200,24 +194,20 @@ def log_start(log: logging.Logger, message: str) -> None:
 # ---------------------------------------------------------------------------
 
 def parse_properties_file(path: Path) -> dict[str, str]:
-    """Load a simple Java-style key=value properties file.
-
-    Blank lines and lines beginning with # or ; are ignored. Both '=' and ':'
-    can separate a key from its value. Values are stored as plain strings.
-    """
+    """Read a simple key=value or key:value properties file."""
     if not path.exists():
         raise FileNotFoundError(
             f"Configuration file not found: {path}\n"
             f"Copy {EXAMPLE_CONFIG_FILENAME} to {DEFAULT_CONFIG_FILENAME} "
-            "and adjust the filter offsets for this observatory."
+            "and configure the main-tube filter offsets."
         )
-
-    properties: dict[str, str] = {}
 
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         raise OSError(f"Could not read configuration file {path}: {exc}") from exc
+
+    properties: dict[str, str] = {}
 
     for line_number, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
@@ -251,10 +241,12 @@ def parse_properties_file(path: Path) -> dict[str, str]:
 
 
 def require_property(properties: dict[str, str], key: str, path: Path) -> str:
-    """Return a required property or raise a configuration error."""
+    """Return a required property value."""
     value = properties.get(key)
+
     if value is None or not value.strip():
         raise ValueError(f"Missing required property {key!r} in {path}.")
+
     return value.strip()
 
 
@@ -290,14 +282,14 @@ def parse_int_property(
 
 
 def load_sequencer_config(config_path: Path) -> SequencerConfig:
-    """Load and validate filter definitions from a properties file."""
-    resolved_path = config_path.expanduser().resolve()
-    properties = parse_properties_file(resolved_path)
+    """Load and validate main-tube filter definitions."""
+    source_path = config_path.expanduser().resolve()
+    properties = parse_properties_file(source_path)
 
     default_filter = parse_int_property(
         properties,
         "filter.default",
-        resolved_path,
+        source_path,
         minimum=MIN_FILTER_POSITION,
         maximum=MAX_FILTER_POSITION,
     )
@@ -305,11 +297,12 @@ def load_sequencer_config(config_path: Path) -> SequencerConfig:
     filters: dict[int, FilterDefinition] = {}
 
     for position in range(MIN_FILTER_POSITION, MAX_FILTER_POSITION + 1):
-        name_key = f"filter.{position}.name"
-        offset_key = f"filter.{position}.offset_steps"
-
-        name = require_property(properties, name_key, resolved_path)
-        offset_steps = parse_int_property(properties, offset_key, resolved_path)
+        name = require_property(properties, f"filter.{position}.name", source_path)
+        offset_steps = parse_int_property(
+            properties,
+            f"filter.{position}.offset_steps",
+            source_path,
+        )
 
         filters[position] = FilterDefinition(
             position=position,
@@ -317,27 +310,21 @@ def load_sequencer_config(config_path: Path) -> SequencerConfig:
             offset_steps=offset_steps,
         )
 
-    if default_filter not in filters:
+    if filters[1].offset_steps != 0:
         raise ValueError(
-            f"filter.default={default_filter} is not configured in {resolved_path}."
-        )
-
-    reference_filter = filters[1]
-    if reference_filter.offset_steps != 0:
-        raise ValueError(
-            f"filter.1.offset_steps must be 0 in {resolved_path}; "
-            "filter 1 is the no-filter reference for the thermal model."
+            f"filter.1.offset_steps must be 0 in {source_path}; "
+            "filter 1 is the no-filter thermal-model reference."
         )
 
     return SequencerConfig(
-        source_path=resolved_path,
+        source_path=source_path,
         default_filter=default_filter,
         filters=filters,
     )
 
 
 def resolve_config_path(cli_path: str | None) -> Path:
-    """Return the configuration path, defaulting beside this script."""
+    """Return the local main-tube configuration file path."""
     if cli_path:
         return Path(cli_path).expanduser().resolve()
 
@@ -345,35 +332,18 @@ def resolve_config_path(cli_path: str | None) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# State producer and ASCOM helpers
+# State and tube helpers
 # ---------------------------------------------------------------------------
 
-def resolve_producer_python(log: logging.Logger) -> str:
-    """Return the Python interpreter for sharpcap_focuser.py."""
-    sibling_root = SHARPCAP_FOCUSER_PATH.parent
-    candidates = [
-        sibling_root / ".venv" / "Scripts" / "python.exe",
-        sibling_root / ".venv" / "bin" / "python",
-    ]
-
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-
-    log.warning(
-        f"UPDATE — sibling .venv not found at {sibling_root / '.venv'}; "
-        "falling back to sys.executable (numpy/statsmodels may be missing)"
-    )
-    return sys.executable
-
-
 def resolve_state_json(cli_path: str | None) -> Path:
-    """Return the state JSON path to use."""
+    """Return the selected state JSON path."""
     if cli_path is not None:
-        path = Path(cli_path).expanduser().resolve()
-        if not path.exists():
-            raise FileNotFoundError(f"--state-json path not found: {path}")
-        return path
+        state_path = Path(cli_path).expanduser().resolve()
+
+        if not state_path.exists():
+            raise FileNotFoundError(f"--state-json path not found: {state_path}")
+
+        return state_path
 
     if not STATE_JSON_PATH.exists():
         raise FileNotFoundError(
@@ -384,8 +354,13 @@ def resolve_state_json(cli_path: str | None) -> Path:
     return STATE_JSON_PATH
 
 
+def detect_tube(state_json_path: Path) -> str:
+    """Identify the optical tube from the selected state JSON filename."""
+    return "guide" if "guide" in state_json_path.name.lower() else "main"
+
+
 def load_state(state_json_path: Path) -> dict:
-    """Read and validate the shared focus state JSON."""
+    """Read and validate the thermal-model state JSON."""
     try:
         with state_json_path.open("r", encoding="utf-8") as handle:
             state = json.load(handle)
@@ -410,13 +385,27 @@ def load_state(state_json_path: Path) -> dict:
     return state
 
 
-def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | None:
-    """Regenerate and reload the state JSON from current SharpCap logs.
+def resolve_producer_python(log: logging.Logger) -> str:
+    """Return the sibling producer repository Python interpreter."""
+    sibling_root = SHARPCAP_FOCUSER_PATH.parent
+    candidates = [
+        sibling_root / ".venv" / "Scripts" / "python.exe",
+        sibling_root / ".venv" / "bin" / "python",
+    ]
 
-    Returns the freshly loaded state on success. Returns None if refreshing
-    fails, in which case the caller should continue with the already loaded
-    state data.
-    """
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    log.warning(
+        f"UPDATE — sibling .venv not found at {sibling_root / '.venv'}; "
+        "falling back to sys.executable"
+    )
+    return sys.executable
+
+
+def refresh_state_json(state_json_path: Path, tube: str, log: logging.Logger) -> dict | None:
+    """Refresh the selected state JSON from current SharpCap logs."""
     if not SHARPCAP_FOCUSER_PATH.exists():
         log.error(
             f"UPDATE FAILED — sharpcap_focuser.py not found at: "
@@ -426,7 +415,6 @@ def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | Non
 
     producer_python = resolve_producer_python(log)
     sibling_root = str(SHARPCAP_FOCUSER_PATH.parent)
-    tube = "guide" if "guide" in state_json_path.name.lower() else "main"
 
     try:
         result = subprocess.run(
@@ -458,7 +446,7 @@ def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | Non
         log.error(f"UPDATE FAILED — could not reload state JSON after refresh: {exc}")
         return None
 
-    ref = fresh_state.get("timestamp_ref", "unknown")
+    timestamp_ref = fresh_state.get("timestamp_ref", "unknown")
     focus_ref = fresh_state.get("focus_ref", "?")
     temp_ref = fresh_state.get("temp_ref", "?")
     tcf = fresh_state.get("model_tcf", "?")
@@ -467,15 +455,26 @@ def refresh_state_json(state_json_path: Path, log: logging.Logger) -> dict | Non
     tcf_text = f"{tcf:.2f}" if isinstance(tcf, float) else str(tcf)
 
     log.info(
-        f"UPDATE OK — ref={ref} | focus_ref={focus_ref} | "
-        f"T_ref={temp_text} | TCF={tcf_text}"
+        f"UPDATE OK — tube={tube} | ref={timestamp_ref} | "
+        f"focus_ref={focus_ref} | T_ref={temp_text} | TCF={tcf_text}"
     )
 
     return fresh_state
 
 
+def save_state(state: dict, state_json_path: Path) -> None:
+    """Persist the runtime fields in the shared state JSON."""
+    with state_json_path.open("w", encoding="utf-8") as handle:
+        json.dump(state, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+
+
+# ---------------------------------------------------------------------------
+# ASCOM helpers
+# ---------------------------------------------------------------------------
+
 def connect_focuser(ascom_id: str):
-    """Connect to an ASCOM focuser and return its COM object."""
+    """Connect to an ASCOM focuser and return the COM driver object."""
     try:
         import win32com.client
     except ImportError as exc:
@@ -492,8 +491,19 @@ def connect_focuser(ascom_id: str):
     return focuser
 
 
+def disconnect_focuser(focuser, log: logging.Logger) -> None:
+    """Disconnect without masking the preceding operation result."""
+    if focuser is None:
+        return
+
+    try:
+        focuser.Connected = False
+    except Exception as exc:
+        log.warning(f"Could not disconnect ASCOM focuser cleanly: {exc}")
+
+
 def check_not_busy(focuser) -> bool:
-    """Return True when the focuser is ready for an external movement."""
+    """Return whether the focuser can accept a new movement."""
     try:
         return not bool(focuser.IsMoving)
     except Exception as exc:
@@ -501,7 +511,7 @@ def check_not_busy(focuser) -> bool:
 
 
 def read_temperature(focuser) -> float:
-    """Read temperature from the EAF external sensor."""
+    """Read the external EAF temperature sensor."""
     try:
         temperature = focuser.Temperature
     except Exception as exc:
@@ -516,7 +526,7 @@ def read_temperature(focuser) -> float:
 
 
 def read_position(focuser) -> int:
-    """Read the commanded EAF position."""
+    """Read the current commanded focuser position."""
     try:
         return int(focuser.Position)
     except Exception as exc:
@@ -524,12 +534,7 @@ def read_position(focuser) -> int:
 
 
 def get_focuser_limits(focuser) -> tuple[int, int | None]:
-    """Return (minimum, maximum) focuser limits.
-
-    ASCOM focusers conventionally use zero as the minimum. If MaxStep is
-    unsupported or invalid, None is returned and only the zero lower bound is
-    enforced.
-    """
+    """Return the lower and available upper ASCOM focuser limits."""
     minimum = 0
     maximum: int | None = None
 
@@ -548,17 +553,17 @@ def clamp_target_to_limits(
     minimum: int,
     maximum: int | None,
 ) -> tuple[int, bool]:
-    """Clamp a target position to the available mechanical ASCOM limits."""
-    clamped = max(target, minimum)
+    """Clamp a requested target to known ASCOM focuser limits."""
+    clamped_target = max(target, minimum)
 
     if maximum is not None:
-        clamped = min(clamped, maximum)
+        clamped_target = min(clamped_target, maximum)
 
-    return clamped, clamped != target
+    return clamped_target, clamped_target != target
 
 
 def move_focuser(focuser, target: int, timeout_s: float) -> int:
-    """Move the focuser and wait until the ASCOM driver reports completion."""
+    """Move the focuser and wait for the ASCOM driver to finish."""
     focuser.Move(target)
     deadline = time.monotonic() + timeout_s
 
@@ -579,7 +584,7 @@ def move_focuser_with_backlash(
     backlash_steps: int,
     timeout_s: float,
 ) -> int:
-    """Move to target while always approaching it from below when needed."""
+    """Move to target while approaching from below when backlash is enabled."""
     if backlash_steps > 0 and target < current_position:
         overshoot = max(target - backlash_steps, 0)
         move_focuser(focuser, overshoot, timeout_s)
@@ -587,42 +592,23 @@ def move_focuser_with_backlash(
     return move_focuser(focuser, target, timeout_s)
 
 
-def save_state(state: dict, state_json_path: Path) -> None:
-    """Persist runtime state after a successful movement."""
-    with state_json_path.open("w", encoding="utf-8") as handle:
-        json.dump(state, handle, indent=2, ensure_ascii=False)
-        handle.write("\n")
-
-
-def disconnect_focuser(focuser, log: logging.Logger) -> None:
-    """Disconnect from ASCOM without hiding the original operation result."""
-    if focuser is None:
-        return
-
-    try:
-        focuser.Connected = False
-    except Exception as exc:
-        log.warning(f"Could not disconnect ASCOM focuser cleanly: {exc}")
-
-
 # ---------------------------------------------------------------------------
-# Command-line interface
+# Command-line arguments
 # ---------------------------------------------------------------------------
 
 def parse_arguments() -> argparse.Namespace:
-    """Parse sequencer command-line arguments."""
+    """Parse and validate command-line options."""
     parser = argparse.ArgumentParser(
         description=(
-            "On-demand thermal focus compensator for a ZWO EAF via ASCOM. "
-            "The thermal model is referenced to filter 1 (Sin filtro); "
-            "the selected filter offset is added to the final target."
+            "On-demand thermal focus compensator for ZWO EAF via ASCOM. "
+            "Main-tube filter offsets are loaded from a properties file."
         )
     )
 
     parser.add_argument(
         "--state-json",
         default=None,
-        help="Path to the state JSON produced by sharpcap_focuser.py.",
+        help="Path to the focus state JSON produced by sharpcap_focuser.py.",
     )
 
     parser.add_argument(
@@ -635,7 +621,7 @@ def parse_arguments() -> argparse.Namespace:
         "--config",
         default=None,
         help=(
-            f"Path to the filter properties file. Defaults to "
+            f"Main-tube filter properties path. Defaults to "
             f"{DEFAULT_CONFIG_FILENAME} beside this script."
         ),
     )
@@ -649,7 +635,7 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         metavar="POSITION",
         help=(
-            "Target filter-wheel position, from 1 to 7. If omitted, "
+            "Main-tube target filter position, from 1 to 7. If omitted, "
             "filter.default from the properties file is used."
         ),
     )
@@ -657,7 +643,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Calculate and log the move without moving the focuser or refreshing state.",
+        help=(
+            "Read state, focuser position and temperature without refreshing "
+            "the state JSON or moving the focuser."
+        ),
     )
 
     parser.add_argument(
@@ -665,7 +654,7 @@ def parse_arguments() -> argparse.Namespace:
         type=float,
         default=None,
         metavar="DEGREES",
-        help="Override the temperature read from the EAF sensor.",
+        help="Override the EAF temperature reading.",
     )
 
     parser.add_argument(
@@ -682,8 +671,8 @@ def parse_arguments() -> argparse.Namespace:
         default=DEFAULT_MIN_CORRECTION,
         metavar="STEPS",
         help=(
-            "Minimum correction required only when a backlash overshoot would "
-            f"be needed (default: {DEFAULT_MIN_CORRECTION})."
+            "Minimum correction only when backlash overshoot is required "
+            f"(default: {DEFAULT_MIN_CORRECTION})."
         ),
     )
 
@@ -692,7 +681,7 @@ def parse_arguments() -> argparse.Namespace:
         type=float,
         default=MOVE_TIMEOUT_S,
         metavar="SECONDS",
-        help=f"Timeout for each focuser move (default: {MOVE_TIMEOUT_S}).",
+        help=f"Maximum seconds for each movement (default: {MOVE_TIMEOUT_S}).",
     )
 
     args = parser.parse_args()
@@ -713,31 +702,76 @@ def parse_arguments() -> argparse.Namespace:
 # Main program
 # ---------------------------------------------------------------------------
 
+def select_active_filter(
+    args: argparse.Namespace,
+    state_json_path: Path,
+) -> tuple[str, ActiveFilter, SequencerConfig | None]:
+    """Identify the tube and select its active filter context."""
+    tube = detect_tube(state_json_path)
+
+    if tube == "guide":
+        if args.filter_position is not None:
+            raise ValueError(
+                "--filter is supported only for the main tube. "
+                "The guide tube always uses a zero filter offset."
+            )
+
+        if args.config is not None:
+            raise ValueError(
+                "--config is supported only for the main tube. "
+                "The guide tube does not load filter configuration."
+            )
+
+        return (
+            tube,
+            ActiveFilter(
+                position=None,
+                name="N/A",
+                offset_steps=0,
+                applies_to_main_tube=False,
+            ),
+            None,
+        )
+
+    config_path = resolve_config_path(args.config)
+    sequencer_config = load_sequencer_config(config_path)
+
+    filter_position = (
+        args.filter_position
+        if args.filter_position is not None
+        else sequencer_config.default_filter
+    )
+
+    selected_filter = sequencer_config.get_filter(filter_position)
+
+    return (
+        tube,
+        ActiveFilter(
+            position=selected_filter.position,
+            name=selected_filter.name,
+            offset_steps=selected_filter.offset_steps,
+            applies_to_main_tube=True,
+        ),
+        sequencer_config,
+    )
+
+
 def main() -> int:
+    """Run a single thermal-focus correction cycle."""
     log = setup_logging()
     args = parse_arguments()
     focuser = None
 
     try:
-        config_path = resolve_config_path(args.config)
-        sequencer_config = load_sequencer_config(config_path)
-        selected_filter_position = (
-            args.filter_position
-            if args.filter_position is not None
-            else sequencer_config.default_filter
+        state_json_path = resolve_state_json(args.state_json)
+        tube, active_filter, sequencer_config = select_active_filter(
+            args,
+            state_json_path,
         )
-        selected_filter = sequencer_config.get_filter(selected_filter_position)
+        state = load_state(state_json_path)
     except (FileNotFoundError, OSError, ValueError) as exc:
         log.error(f"Configuration error: {exc}")
         log.info("END   | pos=N/A | reason=configuration_error")
-        return 1
-
-    try:
-        state_json_path = resolve_state_json(args.state_json)
-        state = load_state(state_json_path)
-    except (FileNotFoundError, ValueError) as exc:
-        log.error(str(exc))
-        log.info("END   | pos=N/A | reason=error")
         return 1
 
     focus_ref = int(state["focus_ref"])
@@ -749,18 +783,24 @@ def main() -> int:
 
     last_temp_text = (
         f"{last_temp:.2f}{DEG_C}"
-        if isinstance(last_temp, (float, int))
+        if isinstance(last_temp, (int, float))
         else str(last_temp)
+    )
+
+    config_text = (
+        f" | config={sequencer_config.source_path.name}"
+        if sequencer_config is not None
+        else ""
     )
 
     log_start(
         log,
-        f"ref={timestamp_ref} | focus_ref={focus_ref} | "
+        f"tube={tube} | ref={timestamp_ref} | focus_ref={focus_ref} | "
         f"T_ref={temp_ref:.2f}{DEG_C} | TCF={tcf:.2f} | "
         f"last_focus={last_focus} | last_T={last_temp_text} | "
-        f"filter={selected_filter.position} ({selected_filter.name}) | "
-        f"filter_offset={selected_filter.offset_steps:+d} | "
-        f"config={sequencer_config.source_path.name} | "
+        f"filter={active_filter.label} | "
+        f"filter_offset={active_filter.offset_steps:+d}"
+        f"{config_text} | "
         f"backlash={args.backlash} | min_correction={args.min_correction}"
         + (" | DRY_RUN" if args.dry_run else "")
     )
@@ -773,116 +813,90 @@ def main() -> int:
         return 1
 
     try:
-        ready = check_not_busy(focuser)
-    except RuntimeError as exc:
-        log.error(f"Focuser busy check failed: {exc}")
-        log.info("END   | pos=N/A | reason=error")
-        return 1
-    finally:
-        if focuser is not None and "ready" not in locals():
-            disconnect_focuser(focuser, log)
-
-    if not ready:
-        try:
+        if not check_not_busy(focuser):
             current_position = read_position(focuser)
-        except RuntimeError:
-            current_position = "N/A"
+            log.warning(
+                "Focuser busy (IsMoving=True) — skipping this cycle, retry later"
+            )
+            log.info(f"END   | pos={current_position} | reason=busy")
+            return 0
 
-        log.warning(
-            "Focuser busy (IsMoving=True) — skipping this cycle, retry in 7 min"
-        )
-        log.info(f"END   | pos={current_position} | reason=busy")
-        disconnect_focuser(focuser, log)
-        return 0
+        if not args.dry_run:
+            fresh_state = refresh_state_json(state_json_path, tube, log)
 
-    if not args.dry_run:
-        fresh_state = refresh_state_json(state_json_path, log)
+            if fresh_state is not None:
+                state = fresh_state
+                focus_ref = int(state["focus_ref"])
+                temp_ref = float(state["temp_ref"])
+                tcf = float(state["model_tcf"])
 
-        if fresh_state is not None:
-            state = fresh_state
-            focus_ref = int(state["focus_ref"])
-            temp_ref = float(state["temp_ref"])
-            tcf = float(state["model_tcf"])
-
-    try:
         current_position = read_position(focuser)
-    except RuntimeError as exc:
-        log.error(str(exc))
-        log.info("END   | pos=N/A | reason=error")
-        disconnect_focuser(focuser, log)
-        return 1
 
-    try:
         current_temperature = (
             args.temp if args.temp is not None else read_temperature(focuser)
         )
-    except RuntimeError as exc:
-        log.error(str(exc))
-        log.info(f"END   | pos={current_position} | reason=error")
-        disconnect_focuser(focuser, log)
-        return 1
 
-    delta_temperature = current_temperature - temp_ref
-    base_focus_target = round(focus_ref + tcf * delta_temperature)
-    requested_focus_target = base_focus_target + selected_filter.offset_steps
+        delta_temperature = current_temperature - temp_ref
+        base_focus_target = round(focus_ref + tcf * delta_temperature)
+        requested_focus_target = base_focus_target + active_filter.offset_steps
 
-    minimum_position, maximum_position = get_focuser_limits(focuser)
-    focus_target, target_was_clamped = clamp_target_to_limits(
-        requested_focus_target,
-        minimum_position,
-        maximum_position,
-    )
-
-    if target_was_clamped:
-        maximum_text = str(maximum_position) if maximum_position is not None else "unknown"
-        log.warning(
-            f"Requested target={requested_focus_target} is outside ASCOM limits "
-            f"[{minimum_position}, {maximum_text}]; using clamped target={focus_target}"
+        minimum_position, maximum_position = get_focuser_limits(focuser)
+        focus_target, target_was_clamped = clamp_target_to_limits(
+            requested_focus_target,
+            minimum_position,
+            maximum_position,
         )
 
-    correction = focus_target - current_position
-    needs_backlash = args.backlash > 0 and focus_target < current_position
+        if target_was_clamped:
+            maximum_text = (
+                str(maximum_position) if maximum_position is not None else "unknown"
+            )
+            log.warning(
+                f"Requested target={requested_focus_target} is outside ASCOM "
+                f"limits [{minimum_position}, {maximum_text}]; "
+                f"using clamped target={focus_target}"
+            )
 
-    calculation_text = (
-        f"T={current_temperature:.2f}{DEG_C} | "
-        f"{DELTA}T={delta_temperature:+.2f}{DEG_C} | "
-        f"TCF={tcf:.2f} | "
-        f"filter={selected_filter.position} ({selected_filter.name}) | "
-        f"filter_offset={selected_filter.offset_steps:+d} | "
-        f"base_target={base_focus_target} | "
-        f"target={focus_target} | "
-        f"pos={current_position} | "
-        f"correction={correction:+d}"
-    )
+        correction = focus_target - current_position
+        needs_backlash = args.backlash > 0 and focus_target < current_position
 
-    if correction == 0:
-        log.info(
-            f"{calculation_text} | backlash=False | final={current_position} | "
-            "no move needed"
+        calculation_text = (
+            f"tube={tube} | "
+            f"T={current_temperature:.2f}{DEG_C} | "
+            f"{DELTA}T={delta_temperature:+.2f}{DEG_C} | "
+            f"TCF={tcf:.2f} | "
+            f"filter={active_filter.label} | "
+            f"filter_offset={active_filter.offset_steps:+d} | "
+            f"base_target={base_focus_target} | "
+            f"target={focus_target} | "
+            f"pos={current_position} | "
+            f"correction={correction:+d}"
         )
-        log.info(f"END   | pos={current_position} | reason=ok")
-        disconnect_focuser(focuser, log)
-        return 0
 
-    if needs_backlash and abs(correction) < args.min_correction:
-        log.warning(
-            f"{calculation_text} | below min_correction={args.min_correction} "
-            "(backlash direction) — skipped"
-        )
-        log.info(f"END   | pos={current_position} | reason=min_correction")
-        disconnect_focuser(focuser, log)
-        return 0
+        if correction == 0:
+            log.info(
+                f"{calculation_text} | backlash=False | "
+                f"final={current_position} | no move needed"
+            )
+            log.info(f"END   | pos={current_position} | reason=ok")
+            return 0
 
-    if args.dry_run:
-        log.info(
-            f"DRY | {calculation_text} | backlash={needs_backlash} | "
-            "move NOT executed"
-        )
-        log.info(f"END   | pos={current_position} | reason=dry_run")
-        disconnect_focuser(focuser, log)
-        return 0
+        if needs_backlash and abs(correction) < args.min_correction:
+            log.warning(
+                f"{calculation_text} | below min_correction="
+                f"{args.min_correction} (backlash direction) — skipped"
+            )
+            log.info(f"END   | pos={current_position} | reason=min_correction")
+            return 0
 
-    try:
+        if args.dry_run:
+            log.info(
+                f"DRY | {calculation_text} | backlash={needs_backlash} | "
+                "move NOT executed"
+            )
+            log.info(f"END   | pos={current_position} | reason=dry_run")
+            return 0
+
         final_position = move_focuser_with_backlash(
             focuser,
             focus_target,
@@ -890,42 +904,43 @@ def main() -> int:
             args.backlash,
             args.move_timeout,
         )
-    except Exception as exc:
-        log.error(
-            f"{calculation_text} | move failed: {exc}"
-        )
-        log.info(f"END   | pos={current_position} | reason=error")
-        disconnect_focuser(focuser, log)
-        return 1
 
-    if abs(final_position - focus_target) > 5:
-        log.warning(
-            f"{calculation_text} | backlash={needs_backlash} | "
-            f"final={final_position} | WARNING: differs from target "
-            f"{focus_target} by more than 5 steps"
-        )
-        end_reason = "ok_with_warning"
-    else:
-        log.info(
-            f"{calculation_text} | backlash={needs_backlash} | "
-            f"final={final_position}"
-        )
-        end_reason = "ok"
+        if abs(final_position - focus_target) > 5:
+            log.warning(
+                f"{calculation_text} | backlash={needs_backlash} | "
+                f"final={final_position} | WARNING: differs from target "
+                f"{focus_target} by more than 5 steps"
+            )
+            end_reason = "ok_with_warning"
+        else:
+            log.info(
+                f"{calculation_text} | backlash={needs_backlash} | "
+                f"final={final_position}"
+            )
+            end_reason = "ok"
 
-    state["last_temp_applied"] = round(current_temperature, 2)
-    state["last_focus_applied"] = focus_target
-
-    try:
+        state["last_temp_applied"] = round(current_temperature, 2)
+        state["last_focus_applied"] = focus_target
         save_state(state, state_json_path)
-    except OSError as exc:
-        log.error(f"Could not update state JSON {state_json_path}: {exc}")
-        log.info(f"END   | pos={final_position} | reason=state_save_error")
-        disconnect_focuser(focuser, log)
+
+        log.info(f"END   | pos={final_position} | reason={end_reason}")
+        return 0
+
+    except (RuntimeError, TimeoutError, OSError, ValueError) as exc:
+        current_position_text = "N/A"
+
+        try:
+            if focuser is not None:
+                current_position_text = str(read_position(focuser))
+        except RuntimeError:
+            pass
+
+        log.error(f"Focus correction failed: {exc}")
+        log.info(f"END   | pos={current_position_text} | reason=error")
         return 1
 
-    log.info(f"END   | pos={final_position} | reason={end_reason}")
-    disconnect_focuser(focuser, log)
-    return 0
+    finally:
+        disconnect_focuser(focuser, log)
 
 
 if __name__ == "__main__":
