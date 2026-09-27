@@ -62,12 +62,17 @@ Usage
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import json
 import logging
 import math
+import os
 import subprocess
 import sys
+import tempfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -89,6 +94,7 @@ DEFAULT_BACKLASH_STEPS = 500
 DEFAULT_MIN_CORRECTION = 50
 MOVE_TIMEOUT_S = 60
 MOVE_POLL_INTERVAL_S = 0.5
+DEFAULT_REFRESH_TIMEOUT_S = 300
 
 DEFAULT_CONFIG_FILENAME = "focus_sequencer.properties"
 EXAMPLE_CONFIG_FILENAME = "focus_sequencer.properties.example"
@@ -107,6 +113,10 @@ logging.addLevelName(START_LEVEL, "START")
 logging.addLevelName(logging.INFO, "INFO ")
 logging.addLevelName(logging.WARNING, "SKIP ")
 logging.addLevelName(logging.ERROR, "ERROR")
+
+
+class FocuserLockError(RuntimeError):
+    """Raised when another run already owns the selected focuser lock."""
 
 
 @dataclass(frozen=True)
@@ -198,6 +208,55 @@ def setup_logging(tube: str) -> logging.Logger:
 def log_start(log: logging.Logger, message: str) -> None:
     """Emit a START-level log message."""
     log.log(START_LEVEL, message)
+
+
+@contextlib.contextmanager
+def focuser_execution_lock(ascom_id: str, log: logging.Logger) -> Iterator[None]:
+    """Prevent overlapping sequencer runs from controlling the same ASCOM driver."""
+    log_dir = SCRIPT_DIRECTORY / "logs"
+    log_dir.mkdir(exist_ok=True)
+    driver_key = hashlib.sha256(ascom_id.casefold().encode("utf-8")).hexdigest()[:16]
+    lock_path = log_dir / f".focuser_{driver_key}.lock"
+
+    with lock_path.open("a+b") as lock_file:
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+
+        lock_file.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            try:
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise FocuserLockError(
+                    f"Another sequencer run is already using ASCOM focuser "
+                    f"{ascom_id}."
+                ) from exc
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise FocuserLockError(
+                    f"Another sequencer run is already using ASCOM focuser "
+                    f"{ascom_id}."
+                ) from exc
+
+        try:
+            yield
+        finally:
+            try:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except OSError as exc:
+                log.error(f"Could not release focuser execution lock: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +452,9 @@ def load_state(state_json_path: Path) -> dict:
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid JSON in state file {state_json_path}: {exc}") from exc
 
+    if not isinstance(state, dict):
+        raise ValueError(f"State JSON must contain an object: {state_json_path}")
+
     if state.get("valid") is False:
         reason = state.get("invalid_reason")
         detail = f" Reason: {reason}" if reason else ""
@@ -412,8 +474,29 @@ def load_state(state_json_path: Path) -> dict:
     if missing:
         raise ValueError(f"State JSON is missing required fields: {missing}")
 
-    if state["model_tcf"] is None:
-        raise ValueError("model_tcf is null in the state JSON.")
+    for key in (
+        "focus_ref",
+        "temp_ref",
+        "model_tcf",
+        "last_temp_applied",
+        "last_focus_applied",
+    ):
+        value = state[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{key} must be a finite number in the state JSON.")
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            finite = False
+        if not finite:
+            raise ValueError(f"{key} must be a finite number in the state JSON.")
+
+    for key in ("focus_ref", "last_focus_applied"):
+        value = state[key]
+        if value < 0 or int(value) != value:
+            raise ValueError(
+                f"{key} must be a non-negative integer in the state JSON."
+            )
 
     return state
 
@@ -440,6 +523,7 @@ def refresh_state_json(
     state_json_path: Path,
     tube: str,
     log: logging.Logger,
+    timeout_s: float = DEFAULT_REFRESH_TIMEOUT_S,
 ) -> dict | None:
     """Refresh the selected state JSON from current SharpCap logs."""
     if not SHARPCAP_FOCUSER_PATH.exists():
@@ -465,7 +549,14 @@ def refresh_state_json(
             text=True,
             cwd=str(THERMAL_MODEL_DIRECTORY),
             check=False,
+            timeout=timeout_s,
         )
+    except subprocess.TimeoutExpired:
+        log.error(
+            f"UPDATE FAILED — sharpcap_focuser.py exceeded the "
+            f"{timeout_s:g} s refresh timeout."
+        )
+        return None
     except OSError as exc:
         log.error(f"UPDATE FAILED — could not start sharpcap_focuser.py: {exc}")
         return None
@@ -502,10 +593,28 @@ def refresh_state_json(
 
 
 def save_state(state: dict, state_json_path: Path) -> None:
-    """Persist runtime fields in the selected state JSON."""
-    with state_json_path.open("w", encoding="utf-8") as handle:
-        json.dump(state, handle, indent=2, ensure_ascii=False)
-        handle.write("\n")
+    """Atomically persist runtime fields in the selected state JSON."""
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=state_json_path.parent,
+            prefix=f".{state_json_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(state, handle, indent=2, ensure_ascii=False, allow_nan=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temporary_path, state_json_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -561,7 +670,15 @@ def read_temperature(focuser) -> float:
             "Focuser returned None for Temperature — check the EAF sensor."
         )
 
-    return float(temperature)
+    try:
+        temperature_value = float(temperature)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError(f"Could not parse focuser temperature: {exc}") from exc
+
+    if not math.isfinite(temperature_value):
+        raise RuntimeError("Focuser returned a non-finite temperature.")
+
+    return temperature_value
 
 
 def read_position(focuser) -> int:
@@ -603,6 +720,11 @@ def clamp_target_to_limits(
 
 def move_focuser(focuser, target: int, timeout_s: float) -> int:
     """Move the focuser and wait for the ASCOM driver to finish."""
+    if not check_not_busy(focuser):
+        raise RuntimeError(
+            "Focuser became busy before the requested movement; aborting."
+        )
+
     focuser.Move(target)
     deadline = time.monotonic() + timeout_s
 
@@ -740,6 +862,17 @@ def parse_arguments() -> argparse.Namespace:
         help=f"Maximum seconds for each movement (default: {MOVE_TIMEOUT_S}).",
     )
 
+    parser.add_argument(
+        "--refresh-timeout",
+        type=float,
+        default=DEFAULT_REFRESH_TIMEOUT_S,
+        metavar="SECONDS",
+        help=(
+            "Maximum seconds to wait for the thermal-model refresh "
+            f"(default: {DEFAULT_REFRESH_TIMEOUT_S})."
+        ),
+    )
+
     args = parser.parse_args()
 
     if args.backlash < 0:
@@ -753,6 +886,12 @@ def parse_arguments() -> argparse.Namespace:
 
     if not math.isfinite(args.move_timeout):
         parser.error("--move-timeout must be a finite number.")
+
+    if args.refresh_timeout <= 0 or not math.isfinite(args.refresh_timeout):
+        parser.error("--refresh-timeout must be a finite number greater than zero.")
+
+    if args.temp is not None and not math.isfinite(args.temp):
+        parser.error("--temp must be a finite number.")
 
     if args.tube == GUIDE_TUBE and args.filter_position is not None:
         parser.error("--filter is supported only for --tube main.")
@@ -813,6 +952,16 @@ def main() -> int:
     """Run a single thermal-focus correction cycle."""
     args = parse_arguments()
     log = setup_logging(args.tube)
+    try:
+        with focuser_execution_lock(args.ascom_id, log):
+            return _run_cycle(args, log)
+    except FocuserLockError as exc:
+        log.error(f"Could not start focus cycle: {exc}")
+        log.info("END   | pos=N/A | reason=busy")
+        return 1
+
+
+def _run_cycle(args: argparse.Namespace, log: logging.Logger) -> int:
     focuser = None
 
     try:
@@ -872,7 +1021,12 @@ def main() -> int:
             return 0
 
         if not args.dry_run:
-            fresh_state = refresh_state_json(state_json_path, args.tube, log)
+            fresh_state = refresh_state_json(
+                state_json_path,
+                args.tube,
+                log,
+                args.refresh_timeout,
+            )
 
             if fresh_state is None:
                 log.error(

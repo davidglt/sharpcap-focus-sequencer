@@ -1,9 +1,11 @@
 import contextlib
 import io
 import sys
+import tempfile
 import types
 import unittest
 from argparse import Namespace
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -56,6 +58,164 @@ class SequencerSafetyTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     focus_sequencer.parse_arguments()
 
+    def test_refresh_timeout_must_be_positive_and_finite(self):
+        for value in ("0", "-1", "nan", "inf"):
+            with (
+                self.subTest(value=value),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    ["focus_sequencer.py", f"--refresh-timeout={value}"],
+                ),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit):
+                    focus_sequencer.parse_arguments()
+
+    def test_temperature_override_must_be_finite(self):
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                ["focus_sequencer.py", "--temp=nan"],
+            ),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            with self.assertRaises(SystemExit):
+                focus_sequencer.parse_arguments()
+
+    def test_refresh_timeout_is_passed_to_subprocess(self):
+        logger = mock.Mock()
+        timeout = 12.5
+        with (
+            mock.patch.object(
+                focus_sequencer.Path,
+                "exists",
+                return_value=True,
+            ),
+            mock.patch.object(focus_sequencer, "resolve_producer_python", return_value="python.exe"),
+            mock.patch.object(
+                focus_sequencer.subprocess,
+                "run",
+                side_effect=focus_sequencer.subprocess.TimeoutExpired("python.exe", timeout),
+            ) as run,
+        ):
+            result = focus_sequencer.refresh_state_json(
+                Path("state.json"),
+                "main",
+                logger,
+                timeout,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(run.call_args.kwargs["timeout"], timeout)
+        logger.error.assert_called_once()
+        self.assertIn("refresh timeout", logger.error.call_args.args[0])
+
+    def test_focuser_lock_rejects_a_second_run(self):
+        logger = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(
+                focus_sequencer,
+                "SCRIPT_DIRECTORY",
+                Path(directory),
+            ):
+                with focus_sequencer.focuser_execution_lock("ASCOM.Test.Focuser", logger):
+                    with self.assertRaises(focus_sequencer.FocuserLockError):
+                        with focus_sequencer.focuser_execution_lock(
+                            "ASCOM.Test.Focuser",
+                            logger,
+                        ):
+                            self.fail("Concurrent focuser lock unexpectedly succeeded")
+
+    def test_move_is_aborted_if_focuser_becomes_busy(self):
+        focuser = mock.Mock()
+        focuser.IsMoving = True
+
+        with self.assertRaisesRegex(RuntimeError, "became busy"):
+            focus_sequencer.move_focuser(focuser, 12000, 5)
+
+        focuser.Move.assert_not_called()
+
+    def test_non_finite_focuser_temperature_is_rejected(self):
+        focuser = mock.Mock()
+        focuser.Temperature = float("nan")
+
+        with self.assertRaisesRegex(RuntimeError, "non-finite temperature"):
+            focus_sequencer.read_temperature(focuser)
+
+    def test_move_timeout_is_enforced(self):
+        class FakeFocuser:
+            IsMoving = False
+
+            def Move(self, target):
+                self.target = target
+                self.IsMoving = True
+
+        focuser = FakeFocuser()
+
+        with (
+            mock.patch.object(focus_sequencer.time, "monotonic", side_effect=[0, 2]),
+            mock.patch.object(focus_sequencer.time, "sleep"),
+            self.assertRaises(TimeoutError),
+        ):
+            focus_sequencer.move_focuser(focuser, 12000, 1)
+
+        self.assertEqual(focuser.target, 12000)
+
+    def test_backlash_compensation_approaches_target_from_below(self):
+        focuser = mock.Mock()
+
+        with mock.patch.object(
+            focus_sequencer,
+            "move_focuser",
+            side_effect=[500, 800],
+        ) as move:
+            result = focus_sequencer.move_focuser_with_backlash(
+                focuser,
+                target=800,
+                current_position=1000,
+                backlash_steps=300,
+                timeout_s=10,
+            )
+
+        self.assertEqual(result, 800)
+        self.assertEqual(
+            [call.args[1] for call in move.call_args_list],
+            [500, 800],
+        )
+
+    def test_target_is_clamped_to_available_focuser_limits(self):
+        self.assertEqual(
+            focus_sequencer.clamp_target_to_limits(12000, 0, 10000),
+            (10000, True),
+        )
+        self.assertEqual(
+            focus_sequencer.clamp_target_to_limits(-20, 0, 10000),
+            (0, True),
+        )
+        self.assertEqual(
+            focus_sequencer.clamp_target_to_limits(5000, 0, 10000),
+            (5000, False),
+        )
+
+    def test_filter_reference_offset_must_remain_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "focus.properties"
+            definitions = ["filter.default=1"]
+            for position in range(1, 8):
+                offset = 1 if position == 1 else 0
+                definitions.extend(
+                    [
+                        f"filter.{position}.name=Filter {position}",
+                        f"filter.{position}.offset_steps={offset}",
+                    ]
+                )
+            config_path.write_text("\n".join(definitions), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "filter.1.offset_steps must be 0"):
+                focus_sequencer.load_sequencer_config(config_path)
+
     def test_refresh_failure_aborts_without_using_loaded_state(self):
         args = Namespace(
             tube="main",
@@ -66,6 +226,7 @@ class SequencerSafetyTests(unittest.TestCase):
             dry_run=False,
             temp=18.0,
             move_timeout=60.0,
+            refresh_timeout=300.0,
             filter_position=None,
             config=None,
         )
@@ -81,6 +242,11 @@ class SequencerSafetyTests(unittest.TestCase):
         with (
             mock.patch.object(focus_sequencer, "parse_arguments", return_value=args),
             mock.patch.object(focus_sequencer, "setup_logging", return_value=logger),
+            mock.patch.object(
+                focus_sequencer,
+                "focuser_execution_lock",
+                return_value=nullcontext(),
+            ),
             mock.patch.object(
                 focus_sequencer,
                 "resolve_state_json",
@@ -104,13 +270,23 @@ class SequencerSafetyTests(unittest.TestCase):
             ),
             mock.patch.object(focus_sequencer, "connect_focuser", return_value=focuser),
             mock.patch.object(focus_sequencer, "check_not_busy", return_value=True),
-            mock.patch.object(focus_sequencer, "refresh_state_json", return_value=None),
+            mock.patch.object(
+                focus_sequencer,
+                "refresh_state_json",
+                return_value=None,
+            ) as refresh,
             mock.patch.object(focus_sequencer, "disconnect_focuser") as disconnect,
             mock.patch.object(focus_sequencer, "read_position") as read_position,
         ):
             result = focus_sequencer.main()
 
         self.assertEqual(result, 1)
+        refresh.assert_called_once_with(
+            Path("state.json"),
+            "main",
+            logger,
+            300.0,
+        )
         read_position.assert_not_called()
         focuser.Move.assert_not_called()
         disconnect.assert_called_once_with(focuser, logger)

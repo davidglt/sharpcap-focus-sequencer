@@ -9,6 +9,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Added a configurable timeout for thermal-model refresh subprocesses.
+- Added per-ASCOM-driver execution locks and a final busy check before each
+  focuser movement.
+- Added atomic replacement for sequencer runtime updates to the focus-state
+  JSON.
+- Added finite-number and focus-position validation for loaded state JSON.
 - Added `focus_sequencer.properties.example` as the versioned template for
   local main-tube sequencer configuration.
 - Added configurable filter focus offsets for main-tube filter positions 1
