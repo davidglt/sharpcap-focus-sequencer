@@ -391,6 +391,13 @@ def load_state(state_json_path: Path) -> dict:
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid JSON in state file {state_json_path}: {exc}") from exc
 
+    if state.get("valid") is False:
+        reason = state.get("invalid_reason")
+        detail = f" Reason: {reason}" if reason else ""
+        raise ValueError(
+            f"State JSON is marked invalid: {state_json_path}.{detail}"
+        )
+
     required = [
         "focus_ref",
         "temp_ref",
