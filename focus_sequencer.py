@@ -7,28 +7,30 @@ r"""
 SharpCap Focus Sequencer — On-demand thermal focus compensator.
 
 Reads the regression model and last autofocus reference produced by
-sharpcap-focus-temperature (sharpcap_focus_state.json), queries the
-current temperature from the ZWO EAF external sensor via ASCOM, and
-moves the focuser to the thermally compensated position.
+sharpcap-focus-temperature, queries the current temperature from the ZWO EAF
+external sensor via ASCOM, and moves the focuser to the thermally compensated
+position.
 
-The thermal model for the main tube must be calibrated with filter position 1,
-"No filter". A selected main-tube capture filter contributes its configured
-focus offset to the no-filter thermal target:
+The selected optical tube determines the state JSON, filter behavior and log:
+
+    --tube main:
+        Main tube: Celestron C8 + F/6.3 reducer + ASI2600MC Pro + ZWO EAF
+        Daily log: logs\YYYYMMDD_focus_sequencer.log
+        Supports filter offsets from focus_sequencer.properties.
+
+    --tube guide:
+        Guide tube: Sky-Watcher 50ED + ASI224MC + second ZWO EAF
+        Daily log: logs\YYYYMMDD_focus_sequencer_guide.log
+        Uses zero filter offset.
+
+The main-tube thermal model must be calibrated with filter position 1,
+"No filter". A selected capture filter contributes its configured focus offset:
 
     base_focus_target = focus_ref + TCF * (T_current - T_ref)
     final_focus_target = base_focus_target + filter_offset_steps
 
-Filter offsets apply only to the main optical tube:
-
-    Main tube:  Celestron C8 + F/6.3 reducer + ASI2600MC Pro + ZWO EAF
-    Guide tube: Sky-Watcher 50ED + ASI224MC + second ZWO EAF
-
-The guide tube uses its own thermal model and always applies a zero filter
-offset. Supplying --filter for a guide-tube state JSON is an error.
-
-Main-tube filter definitions are loaded from focus_sequencer.properties.
-Copy focus_sequencer.properties.example to focus_sequencer.properties and
-adjust the filter names and offsets for the local observatory.
+The guide tube uses its own thermal model and always applies zero filter
+offset. Supplying --filter or --config for --tube guide is an error.
 
 Backlash compensation
 ---------------------
@@ -48,18 +50,13 @@ If the focuser is already moving after connection, for example because
 SharpCap is running autofocus, the script exits without moving the focuser.
 A scheduled sequencer can retry later.
 
-State JSON
-----------
-Both the state JSON and sharpcap_focuser.py belong to the sibling repository
-sharpcap-focus-temperature. Before each non-dry run, this script refreshes the
-selected state JSON from current SharpCap logs after the focuser busy check.
-
 Usage
 -----
-    python focus_sequencer.py
-    python focus_sequencer.py --filter 2
-    python focus_sequencer.py --filter 2 --dry-run
-    python focus_sequencer.py --config custom.properties --filter 2
+    python focus_sequencer.py --tube main
+    python focus_sequencer.py --tube main --filter 2
+    python focus_sequencer.py --tube main --filter 2 --dry-run
+    python focus_sequencer.py --tube guide
+    python focus_sequencer.py --tube guide --state-json "..\sharpcap-focus-temperature\sharpcap_focus_state_guide.json"
 """
 
 from __future__ import annotations
@@ -78,7 +75,13 @@ from pathlib import Path
 DEG_C = "°C"
 DELTA = "d"
 
+MAIN_TUBE = "main"
+GUIDE_TUBE = "guide"
+TUBES = (MAIN_TUBE, GUIDE_TUBE)
+
 STATE_JSON_FILENAME = "sharpcap_focus_state.json"
+GUIDE_STATE_JSON_FILENAME = "sharpcap_focus_state_guide.json"
+
 DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
 DEFAULT_BACKLASH_STEPS = 500
 DEFAULT_MIN_CORRECTION = 50
@@ -90,17 +93,12 @@ EXAMPLE_CONFIG_FILENAME = "focus_sequencer.properties.example"
 MIN_FILTER_POSITION = 1
 MAX_FILTER_POSITION = 7
 
-SHARPCAP_FOCUSER_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "sharpcap-focus-temperature"
-    / "sharpcap_focuser.py"
-)
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+THERMAL_MODEL_DIRECTORY = SCRIPT_DIRECTORY.parent / "sharpcap-focus-temperature"
 
-STATE_JSON_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "sharpcap-focus-temperature"
-    / STATE_JSON_FILENAME
-)
+SHARPCAP_FOCUSER_PATH = THERMAL_MODEL_DIRECTORY / "sharpcap_focuser.py"
+MAIN_STATE_JSON_PATH = THERMAL_MODEL_DIRECTORY / STATE_JSON_FILENAME
+GUIDE_STATE_JSON_PATH = THERMAL_MODEL_DIRECTORY / GUIDE_STATE_JSON_FILENAME
 
 START_LEVEL = 25
 logging.addLevelName(START_LEVEL, "START")
@@ -155,12 +153,23 @@ class ActiveFilter:
 # Logging
 # ---------------------------------------------------------------------------
 
-def setup_logging() -> logging.Logger:
+def log_filename_for_tube(tube: str) -> str:
+    """Return the daily log filename for the selected optical tube."""
+    date_prefix = datetime.now().strftime("%Y%m%d")
+
+    if tube == GUIDE_TUBE:
+        return f"{date_prefix}_focus_sequencer_guide.log"
+
+    return f"{date_prefix}_focus_sequencer.log"
+
+
+def setup_logging(tube: str) -> logging.Logger:
     """Create the daily file logger and a stdout handler."""
-    log_dir = Path(__file__).resolve().parent / "logs"
+    log_dir = SCRIPT_DIRECTORY / "logs"
     log_dir.mkdir(exist_ok=True)
 
-    log_path = log_dir / f"{datetime.now().strftime('%Y%m%d')}_focus_sequencer.log"
+    log_path = log_dir / log_filename_for_tube(tube)
+
     formatter = logging.Formatter(
         "%(asctime)s | %(levelname)-5s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -328,35 +337,50 @@ def resolve_config_path(cli_path: str | None) -> Path:
     if cli_path:
         return Path(cli_path).expanduser().resolve()
 
-    return Path(__file__).resolve().parent / DEFAULT_CONFIG_FILENAME
+    return SCRIPT_DIRECTORY / DEFAULT_CONFIG_FILENAME
 
 
 # ---------------------------------------------------------------------------
 # State and tube helpers
 # ---------------------------------------------------------------------------
 
-def resolve_state_json(cli_path: str | None) -> Path:
-    """Return the selected state JSON path."""
-    if cli_path is not None:
-        state_path = Path(cli_path).expanduser().resolve()
+def default_state_json_path(tube: str) -> Path:
+    """Return the default state JSON path for the selected tube."""
+    return GUIDE_STATE_JSON_PATH if tube == GUIDE_TUBE else MAIN_STATE_JSON_PATH
 
-        if not state_path.exists():
+
+def resolve_state_json(tube: str, cli_path: str | None) -> Path:
+    """Return and validate the selected focus state JSON path."""
+    state_path = (
+        Path(cli_path).expanduser().resolve()
+        if cli_path is not None
+        else default_state_json_path(tube)
+    )
+
+    if not state_path.exists():
+        if cli_path is not None:
             raise FileNotFoundError(f"--state-json path not found: {state_path}")
 
-        return state_path
-
-    if not STATE_JSON_PATH.exists():
         raise FileNotFoundError(
-            f"sharpcap_focus_state.json not found at: {STATE_JSON_PATH}\n"
+            f"Focus state JSON not found for tube={tube}: {state_path}\n"
             "Run sharpcap_focuser.py in sharpcap-focus-temperature first."
         )
 
-    return STATE_JSON_PATH
+    filename_is_guide = GUIDE_TUBE in state_path.name.lower()
 
+    if tube == GUIDE_TUBE and not filename_is_guide:
+        raise ValueError(
+            f"--tube guide requires a guide state JSON filename containing "
+            f"'guide', got: {state_path.name}"
+        )
 
-def detect_tube(state_json_path: Path) -> str:
-    """Identify the optical tube from the selected state JSON filename."""
-    return "guide" if "guide" in state_json_path.name.lower() else "main"
+    if tube == MAIN_TUBE and filename_is_guide:
+        raise ValueError(
+            f"--tube main cannot use a guide state JSON filename, got: "
+            f"{state_path.name}"
+        )
+
+    return state_path
 
 
 def load_state(state_json_path: Path) -> dict:
@@ -387,10 +411,9 @@ def load_state(state_json_path: Path) -> dict:
 
 def resolve_producer_python(log: logging.Logger) -> str:
     """Return the sibling producer repository Python interpreter."""
-    sibling_root = SHARPCAP_FOCUSER_PATH.parent
     candidates = [
-        sibling_root / ".venv" / "Scripts" / "python.exe",
-        sibling_root / ".venv" / "bin" / "python",
+        THERMAL_MODEL_DIRECTORY / ".venv" / "Scripts" / "python.exe",
+        THERMAL_MODEL_DIRECTORY / ".venv" / "bin" / "python",
     ]
 
     for candidate in candidates:
@@ -398,13 +421,17 @@ def resolve_producer_python(log: logging.Logger) -> str:
             return str(candidate)
 
     log.warning(
-        f"UPDATE — sibling .venv not found at {sibling_root / '.venv'}; "
-        "falling back to sys.executable"
+        f"UPDATE — sibling .venv not found at "
+        f"{THERMAL_MODEL_DIRECTORY / '.venv'}; falling back to sys.executable"
     )
     return sys.executable
 
 
-def refresh_state_json(state_json_path: Path, tube: str, log: logging.Logger) -> dict | None:
+def refresh_state_json(
+    state_json_path: Path,
+    tube: str,
+    log: logging.Logger,
+) -> dict | None:
     """Refresh the selected state JSON from current SharpCap logs."""
     if not SHARPCAP_FOCUSER_PATH.exists():
         log.error(
@@ -414,7 +441,6 @@ def refresh_state_json(state_json_path: Path, tube: str, log: logging.Logger) ->
         return None
 
     producer_python = resolve_producer_python(log)
-    sibling_root = str(SHARPCAP_FOCUSER_PATH.parent)
 
     try:
         result = subprocess.run(
@@ -428,7 +454,7 @@ def refresh_state_json(state_json_path: Path, tube: str, log: logging.Logger) ->
             ],
             capture_output=True,
             text=True,
-            cwd=sibling_root,
+            cwd=str(THERMAL_MODEL_DIRECTORY),
             check=False,
         )
     except OSError as exc:
@@ -451,8 +477,12 @@ def refresh_state_json(state_json_path: Path, tube: str, log: logging.Logger) ->
     temp_ref = fresh_state.get("temp_ref", "?")
     tcf = fresh_state.get("model_tcf", "?")
 
-    temp_text = f"{temp_ref:.2f}{DEG_C}" if isinstance(temp_ref, float) else str(temp_ref)
-    tcf_text = f"{tcf:.2f}" if isinstance(tcf, float) else str(tcf)
+    temp_text = (
+        f"{temp_ref:.2f}{DEG_C}"
+        if isinstance(temp_ref, (int, float))
+        else str(temp_ref)
+    )
+    tcf_text = f"{tcf:.2f}" if isinstance(tcf, (int, float)) else str(tcf)
 
     log.info(
         f"UPDATE OK — tube={tube} | ref={timestamp_ref} | "
@@ -463,7 +493,7 @@ def refresh_state_json(state_json_path: Path, tube: str, log: logging.Logger) ->
 
 
 def save_state(state: dict, state_json_path: Path) -> None:
-    """Persist the runtime fields in the shared state JSON."""
+    """Persist runtime fields in the selected state JSON."""
     with state_json_path.open("w", encoding="utf-8") as handle:
         json.dump(state, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
@@ -606,9 +636,22 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--tube",
+        choices=TUBES,
+        default=MAIN_TUBE,
+        help=(
+            "Optical tube to correct. Determines default state JSON, filter "
+            "behavior and daily log name (default: main)."
+        ),
+    )
+
+    parser.add_argument(
         "--state-json",
         default=None,
-        help="Path to the focus state JSON produced by sharpcap_focuser.py.",
+        help=(
+            "Path to the focus state JSON produced by sharpcap_focuser.py. "
+            "Defaults depend on --tube."
+        ),
     )
 
     parser.add_argument(
@@ -695,6 +738,12 @@ def parse_arguments() -> argparse.Namespace:
     if args.move_timeout <= 0:
         parser.error("--move-timeout must be greater than zero.")
 
+    if args.tube == GUIDE_TUBE and args.filter_position is not None:
+        parser.error("--filter is supported only for --tube main.")
+
+    if args.tube == GUIDE_TUBE and args.config is not None:
+        parser.error("--config is supported only for --tube main.")
+
     return args
 
 
@@ -704,26 +753,10 @@ def parse_arguments() -> argparse.Namespace:
 
 def select_active_filter(
     args: argparse.Namespace,
-    state_json_path: Path,
-) -> tuple[str, ActiveFilter, SequencerConfig | None]:
-    """Identify the tube and select its active filter context."""
-    tube = detect_tube(state_json_path)
-
-    if tube == "guide":
-        if args.filter_position is not None:
-            raise ValueError(
-                "--filter is supported only for the main tube. "
-                "The guide tube always uses a zero filter offset."
-            )
-
-        if args.config is not None:
-            raise ValueError(
-                "--config is supported only for the main tube. "
-                "The guide tube does not load filter configuration."
-            )
-
+) -> tuple[ActiveFilter, SequencerConfig | None]:
+    """Select the active filter context for the requested optical tube."""
+    if args.tube == GUIDE_TUBE:
         return (
-            tube,
             ActiveFilter(
                 position=None,
                 name="N/A",
@@ -745,7 +778,6 @@ def select_active_filter(
     selected_filter = sequencer_config.get_filter(filter_position)
 
     return (
-        tube,
         ActiveFilter(
             position=selected_filter.position,
             name=selected_filter.name,
@@ -758,16 +790,13 @@ def select_active_filter(
 
 def main() -> int:
     """Run a single thermal-focus correction cycle."""
-    log = setup_logging()
     args = parse_arguments()
+    log = setup_logging(args.tube)
     focuser = None
 
     try:
-        state_json_path = resolve_state_json(args.state_json)
-        tube, active_filter, sequencer_config = select_active_filter(
-            args,
-            state_json_path,
-        )
+        state_json_path = resolve_state_json(args.tube, args.state_json)
+        active_filter, sequencer_config = select_active_filter(args)
         state = load_state(state_json_path)
     except (FileNotFoundError, OSError, ValueError) as exc:
         log.error(f"Configuration error: {exc}")
@@ -795,7 +824,7 @@ def main() -> int:
 
     log_start(
         log,
-        f"tube={tube} | ref={timestamp_ref} | focus_ref={focus_ref} | "
+        f"tube={args.tube} | ref={timestamp_ref} | focus_ref={focus_ref} | "
         f"T_ref={temp_ref:.2f}{DEG_C} | TCF={tcf:.2f} | "
         f"last_focus={last_focus} | last_T={last_temp_text} | "
         f"filter={active_filter.label} | "
@@ -822,7 +851,7 @@ def main() -> int:
             return 0
 
         if not args.dry_run:
-            fresh_state = refresh_state_json(state_json_path, tube, log)
+            fresh_state = refresh_state_json(state_json_path, args.tube, log)
 
             if fresh_state is not None:
                 state = fresh_state
@@ -861,7 +890,7 @@ def main() -> int:
         needs_backlash = args.backlash > 0 and focus_target < current_position
 
         calculation_text = (
-            f"tube={tube} | "
+            f"tube={args.tube} | "
             f"T={current_temperature:.2f}{DEG_C} | "
             f"{DELTA}T={delta_temperature:+.2f}{DEG_C} | "
             f"TCF={tcf:.2f} | "
@@ -944,4 +973,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
