@@ -64,6 +64,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import subprocess
 import sys
 import time
@@ -83,6 +84,7 @@ STATE_JSON_FILENAME = "sharpcap_focus_state.json"
 GUIDE_STATE_JSON_FILENAME = "sharpcap_focus_state_guide.json"
 
 DEFAULT_ASCOM_ID = "ASCOM.DeviceHub.Focuser"
+GUIDE_ASCOM_ID = "ASCOM.EAF_2.Focuser"
 DEFAULT_BACKLASH_STEPS = 500
 DEFAULT_MIN_CORRECTION = 50
 MOVE_TIMEOUT_S = 60
@@ -663,8 +665,12 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument(
         "--ascom-id",
-        default=DEFAULT_ASCOM_ID,
-        help=f"ASCOM focuser ProgID (default: {DEFAULT_ASCOM_ID}).",
+        default=None,
+        help=(
+            "ASCOM focuser ProgID. Defaults to the Device Hub for the main "
+            f"tube ({DEFAULT_ASCOM_ID}) and the second ZWO EAF for the guide "
+            f"tube ({GUIDE_ASCOM_ID})."
+        ),
     )
 
     parser.add_argument(
@@ -745,11 +751,19 @@ def parse_arguments() -> argparse.Namespace:
     if args.move_timeout <= 0:
         parser.error("--move-timeout must be greater than zero.")
 
+    if not math.isfinite(args.move_timeout):
+        parser.error("--move-timeout must be a finite number.")
+
     if args.tube == GUIDE_TUBE and args.filter_position is not None:
         parser.error("--filter is supported only for --tube main.")
 
     if args.tube == GUIDE_TUBE and args.config is not None:
         parser.error("--config is supported only for --tube main.")
+
+    if args.ascom_id is None:
+        args.ascom_id = (
+            GUIDE_ASCOM_ID if args.tube == GUIDE_TUBE else DEFAULT_ASCOM_ID
+        )
 
     return args
 
@@ -860,11 +874,20 @@ def main() -> int:
         if not args.dry_run:
             fresh_state = refresh_state_json(state_json_path, args.tube, log)
 
-            if fresh_state is not None:
-                state = fresh_state
-                focus_ref = int(state["focus_ref"])
-                temp_ref = float(state["temp_ref"])
-                tcf = float(state["model_tcf"])
+            if fresh_state is None:
+                log.error(
+                    "Thermal model refresh failed; refusing to use the "
+                    "previous state."
+                )
+                log.info(
+                    "END   | pos=N/A | reason=state_refresh_failed"
+                )
+                return 1
+
+            state = fresh_state
+            focus_ref = int(state["focus_ref"])
+            temp_ref = float(state["temp_ref"])
+            tcf = float(state["model_tcf"])
 
         current_position = read_position(focuser)
 

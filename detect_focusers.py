@@ -92,6 +92,8 @@ def probe_focuser(prog_id: str, init_delay: float) -> dict:
         )
         sys.exit(1)
 
+    focuser = None
+    result = None
     try:
         focuser = win32com.client.Dispatch(prog_id)
         focuser.Connected = True
@@ -104,9 +106,7 @@ def probe_focuser(prog_id: str, init_delay: float) -> dict:
         position = getattr(focuser, "Position", None)
         temperature = getattr(focuser, "Temperature", None)
 
-        focuser.Connected = False
-
-        return {
+        result = {
             "name": name,
             "description": description,
             "position": int(position) if position is not None else None,
@@ -114,7 +114,19 @@ def probe_focuser(prog_id: str, init_delay: float) -> dict:
         }
 
     except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc)}
+        result = {"error": str(exc)}
+    finally:
+        if focuser is not None:
+            try:
+                focuser.Connected = False
+            except Exception as exc:  # noqa: BLE001
+                cleanup_error = f"Could not disconnect focuser: {exc}"
+                if result is None or "error" not in result:
+                    result = {"error": cleanup_error}
+                else:
+                    result["error"] += f"; {cleanup_error}"
+
+    return result
 
 
 def parse_arguments():
