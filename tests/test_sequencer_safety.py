@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import types
@@ -147,9 +148,32 @@ class SequencerSafetyTests(unittest.TestCase):
     def test_move_timeout_is_enforced(self):
         class FakeFocuser:
             IsMoving = False
+            halted = False
 
             def Move(self, target):
                 self.target = target
+                self.IsMoving = True
+
+            def Halt(self):
+                self.halted = True
+
+        focuser = FakeFocuser()
+
+        with (
+            mock.patch.object(focus_sequencer.time, "monotonic", side_effect=[0, 2]),
+            mock.patch.object(focus_sequencer.time, "sleep"),
+            self.assertRaisesRegex(TimeoutError, "Halt command was sent"),
+        ):
+            focus_sequencer.move_focuser(focuser, 12000, 1)
+
+        self.assertEqual(focuser.target, 12000)
+        self.assertTrue(focuser.halted)
+
+    def test_move_timeout_reports_if_halt_is_unavailable(self):
+        class FakeFocuser:
+            IsMoving = False
+
+            def Move(self, target):
                 self.IsMoving = True
 
         focuser = FakeFocuser()
@@ -157,11 +181,227 @@ class SequencerSafetyTests(unittest.TestCase):
         with (
             mock.patch.object(focus_sequencer.time, "monotonic", side_effect=[0, 2]),
             mock.patch.object(focus_sequencer.time, "sleep"),
-            self.assertRaises(TimeoutError),
+            self.assertRaisesRegex(
+                TimeoutError,
+                "Halt command failed or is unsupported",
+            ),
         ):
             focus_sequencer.move_focuser(focuser, 12000, 1)
 
-        self.assertEqual(focuser.target, 12000)
+    def test_target_calculation_rejects_non_finite_and_out_of_range_values(self):
+        with self.assertRaisesRegex(ValueError, "non-finite target"):
+            focus_sequencer.calculate_focus_target(
+                10000,
+                1e308,
+                1e308,
+                -1e308,
+                0,
+            )
+
+        with self.assertRaisesRegex(ValueError, "outside the ASCOM position range"):
+            focus_sequencer.calculate_focus_target(
+                2_147_483_647,
+                0,
+                18.0,
+                18.0,
+                1,
+            )
+
+        with self.assertRaisesRegex(ValueError, "outside the ASCOM position range"):
+            focus_sequencer.calculate_focus_target(
+                0,
+                0,
+                18.0,
+                18.0,
+                -1,
+            )
+
+    def test_target_calculation_returns_thermal_and_filter_targets(self):
+        self.assertEqual(
+            focus_sequencer.calculate_focus_target(
+                10000,
+                -100,
+                20.0,
+                18.0,
+                500,
+            ),
+            (2.0, 9800, 10300),
+        )
+
+    def run_simulated_cycle(
+        self,
+        state_path: Path,
+        *,
+        move_side_effect=None,
+        save_side_effect=None,
+        moving_after_timeout=False,
+        temperature=18.0,
+        state_overrides=None,
+    ):
+        args = Namespace(
+            tube="guide",
+            state_json=str(state_path),
+            ascom_id=focus_sequencer.GUIDE_ASCOM_ID,
+            backlash=0,
+            min_correction=0,
+            dry_run=False,
+            temp=temperature,
+            move_timeout=60.0,
+            refresh_timeout=300.0,
+            filter_position=None,
+            config=None,
+        )
+        state = {
+            "focus_ref": 10000,
+            "temp_ref": 18.0,
+            "model_tcf": -60.0,
+            "last_temp_applied": 18.0,
+            "last_focus_applied": 10000,
+        }
+        if state_overrides:
+            state.update(state_overrides)
+        active_filter = focus_sequencer.ActiveFilter(
+            position=None,
+            name="N/A",
+            offset_steps=0,
+            applies_to_main_tube=False,
+        )
+        logger = mock.Mock()
+        focuser = mock.Mock()
+        saved = []
+        real_save_state = focus_sequencer.save_state
+
+        def save_state_call(updated_state, path):
+            if isinstance(save_side_effect, BaseException):
+                raise save_side_effect
+            if callable(save_side_effect):
+                return save_side_effect(updated_state, path)
+            real_save_state(updated_state, path)
+            saved.append((updated_state.copy(), path))
+
+        busy_states = [True, not moving_after_timeout]
+        with (
+            mock.patch.object(focus_sequencer, "parse_arguments", return_value=args),
+            mock.patch.object(focus_sequencer, "setup_logging", return_value=logger),
+            mock.patch.object(
+                focus_sequencer,
+                "focuser_execution_lock",
+                return_value=nullcontext(),
+            ),
+            mock.patch.object(
+                focus_sequencer,
+                "resolve_state_json",
+                return_value=state_path,
+            ),
+            mock.patch.object(
+                focus_sequencer,
+                "select_active_filter",
+                return_value=(active_filter, None),
+            ),
+            mock.patch.object(focus_sequencer, "load_state", return_value=state.copy()),
+            mock.patch.object(focus_sequencer, "connect_focuser", return_value=focuser),
+            mock.patch.object(
+                focus_sequencer,
+                "check_not_busy",
+                side_effect=busy_states,
+            ),
+            mock.patch.object(
+                focus_sequencer,
+                "refresh_state_json",
+                return_value=state.copy(),
+            ),
+            mock.patch.object(focus_sequencer, "read_position", return_value=9000),
+            mock.patch.object(focus_sequencer, "get_focuser_limits", return_value=(0, 20000)),
+            mock.patch.object(
+                focus_sequencer,
+                "move_focuser_with_backlash",
+                side_effect=move_side_effect or (lambda *args: 10000),
+            ) as move,
+            mock.patch.object(
+                focus_sequencer,
+                "save_state",
+                side_effect=save_state_call,
+            ) as save,
+            mock.patch.object(focus_sequencer, "disconnect_focuser"),
+        ):
+            result = focus_sequencer.main()
+
+        return result, logger, move, save, saved
+
+    def test_complete_cycle_moves_and_persists_applied_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "sharpcap_focus_state_guide.json"
+
+            result, logger, move, save, saved = self.run_simulated_cycle(state_path)
+
+            self.assertEqual(result, 0)
+            move.assert_called_once()
+            save.assert_called_once()
+            self.assertEqual(saved[0][0]["last_focus_applied"], 10000)
+            self.assertEqual(saved[0][0]["last_temp_applied"], 18.0)
+            self.assertEqual(
+                json.loads(state_path.read_text(encoding="utf-8"))[
+                    "last_focus_applied"
+                ],
+                10000,
+            )
+            logger.info.assert_any_call("END   | pos=10000 | reason=ok")
+
+    def test_complete_cycle_timeout_does_not_persist_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "sharpcap_focus_state_guide.json"
+            timeout = TimeoutError("Halt command was sent.")
+
+            result, logger, move, save, saved = self.run_simulated_cycle(
+                state_path,
+                move_side_effect=timeout,
+                moving_after_timeout=True,
+            )
+
+            self.assertEqual(result, 1)
+            move.assert_called_once()
+            save.assert_not_called()
+            self.assertEqual(saved, [])
+            logger.info.assert_any_call(
+                "END   | pos=9000 (focuser still moving) | reason=move_timeout"
+            )
+
+    def test_complete_cycle_state_save_failure_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "sharpcap_focus_state_guide.json"
+
+            result, logger, move, save, saved = self.run_simulated_cycle(
+                state_path,
+                save_side_effect=OSError("Disk is full"),
+            )
+
+            self.assertEqual(result, 1)
+            move.assert_called_once()
+            save.assert_called_once()
+            self.assertEqual(saved, [])
+            logger.error.assert_any_call("Focus correction failed: Disk is full")
+            logger.info.assert_any_call("END   | pos=9000 | reason=error")
+
+    def test_complete_cycle_rejects_out_of_range_target_before_movement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "sharpcap_focus_state_guide.json"
+
+            result, logger, move, save, saved = self.run_simulated_cycle(
+                state_path,
+                temperature=18.5,
+                state_overrides={"model_tcf": 1e308},
+            )
+
+            self.assertEqual(result, 1)
+            move.assert_not_called()
+            save.assert_not_called()
+            self.assertEqual(saved, [])
+            error_message = next(
+                call.args[0]
+                for call in logger.error.call_args_list
+                if "Calculated focus target" in call.args[0]
+            )
+            self.assertIn("outside the ASCOM position range", error_message)
 
     def test_backlash_compensation_approaches_target_from_below(self):
         focuser = mock.Mock()

@@ -167,6 +167,7 @@ dry_run
 error
 configuration_error
 state_refresh_failed
+move_timeout
 ```
 
 ## Main-tube filters
@@ -205,6 +206,12 @@ Configure the capture filters and their offsets in
   to a previously loaded state for a focuser movement.
 - State JSON numeric values are validated before use; focus positions must be
   non-negative integers and model values must be finite.
+- The calculated target is checked for finite arithmetic and constrained to
+  the ASCOM focuser position range before a movement is requested.
+- If a movement exceeds `--move-timeout`, the sequencer sends the ASCOM `Halt`
+  command. Logs report whether the command was sent or failed, whether the
+  focuser still reports movement, and its last readable position; the state is
+  not updated after a timed-out movement.
 - Runtime state updates use a temporary file and atomic replacement so an
   interrupted write does not leave a partially written JSON file.
 - Only one sequencer process can operate a given ASCOM ProgID at a time. The

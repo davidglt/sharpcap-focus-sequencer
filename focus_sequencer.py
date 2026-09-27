@@ -95,6 +95,7 @@ DEFAULT_MIN_CORRECTION = 50
 MOVE_TIMEOUT_S = 60
 MOVE_POLL_INTERVAL_S = 0.5
 DEFAULT_REFRESH_TIMEOUT_S = 300
+ASCOM_MAX_STEP_VALUE = 2_147_483_647
 
 DEFAULT_CONFIG_FILENAME = "focus_sequencer.properties"
 EXAMPLE_CONFIG_FILENAME = "focus_sequencer.properties.example"
@@ -497,6 +498,11 @@ def load_state(state_json_path: Path) -> dict:
             raise ValueError(
                 f"{key} must be a non-negative integer in the state JSON."
             )
+        if value > ASCOM_MAX_STEP_VALUE:
+            raise ValueError(
+                f"{key} exceeds the maximum ASCOM focuser position "
+                f"({ASCOM_MAX_STEP_VALUE})."
+            )
 
     return state
 
@@ -718,6 +724,31 @@ def clamp_target_to_limits(
     return clamped_target, clamped_target != target
 
 
+def calculate_focus_target(
+    focus_ref: int,
+    tcf: float,
+    current_temperature: float,
+    reference_temperature: float,
+    filter_offset_steps: int,
+) -> tuple[float, int, int]:
+    """Calculate and validate the thermal target before sending it to ASCOM."""
+    delta_temperature = current_temperature - reference_temperature
+    thermal_target = focus_ref + tcf * delta_temperature
+
+    if not math.isfinite(thermal_target):
+        raise ValueError("Thermal focus calculation produced a non-finite target.")
+
+    base_target = round(thermal_target)
+    requested_target = base_target + filter_offset_steps
+    if not 0 <= requested_target <= ASCOM_MAX_STEP_VALUE:
+        raise ValueError(
+            f"Calculated focus target {requested_target} is outside the ASCOM "
+            f"position range 0..{ASCOM_MAX_STEP_VALUE}."
+        )
+
+    return delta_temperature, base_target, requested_target
+
+
 def move_focuser(focuser, target: int, timeout_s: float) -> int:
     """Move the focuser and wait for the ASCOM driver to finish."""
     if not check_not_busy(focuser):
@@ -730,9 +761,17 @@ def move_focuser(focuser, target: int, timeout_s: float) -> int:
 
     while focuser.IsMoving:
         if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"Focuser did not reach position {target} within {timeout_s:.0f} s."
+            message = (
+                f"Focuser did not reach position {target} within "
+                f"{timeout_s:g} s."
             )
+            try:
+                focuser.Halt()
+            except Exception as exc:
+                message += f" Halt command failed or is unsupported: {exc}"
+            else:
+                message += " Halt command was sent."
+            raise TimeoutError(message)
         time.sleep(MOVE_POLL_INTERVAL_S)
 
     return int(focuser.Position)
@@ -1049,9 +1088,17 @@ def _run_cycle(args: argparse.Namespace, log: logging.Logger) -> int:
             args.temp if args.temp is not None else read_temperature(focuser)
         )
 
-        delta_temperature = current_temperature - temp_ref
-        base_focus_target = round(focus_ref + tcf * delta_temperature)
-        requested_focus_target = base_focus_target + active_filter.offset_steps
+        (
+            delta_temperature,
+            base_focus_target,
+            requested_focus_target,
+        ) = calculate_focus_target(
+            focus_ref,
+            tcf,
+            current_temperature,
+            temp_ref,
+            active_filter.offset_steps,
+        )
 
         minimum_position, maximum_position = get_focuser_limits(focuser)
         focus_target, target_was_clamped = clamp_target_to_limits(
@@ -1145,11 +1192,14 @@ def _run_cycle(args: argparse.Namespace, log: logging.Logger) -> int:
         try:
             if focuser is not None:
                 current_position_text = str(read_position(focuser))
+                if isinstance(exc, TimeoutError) and not check_not_busy(focuser):
+                    current_position_text += " (focuser still moving)"
         except RuntimeError:
             pass
 
         log.error(f"Focus correction failed: {exc}")
-        log.info(f"END   | pos={current_position_text} | reason=error")
+        reason = "move_timeout" if isinstance(exc, TimeoutError) else "error"
+        log.info(f"END   | pos={current_position_text} | reason={reason}")
         return 1
 
     finally:

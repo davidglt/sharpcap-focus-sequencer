@@ -15,6 +15,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Added atomic replacement for sequencer runtime updates to the focus-state
   JSON.
 - Added finite-number and focus-position validation for loaded state JSON.
+- Added an ASCOM `Halt` request after a focuser movement timeout and explicit
+  logging of the last readable position and continued movement status.
+- Added finite and ASCOM-range checks for calculated focus targets.
+- Added simulated full-cycle regression tests for successful movement, movement
+  timeout and state persistence failure.
 - Added `focus_sequencer.properties.example` as the versioned template for
   local main-tube sequencer configuration.
 - Added configurable filter focus offsets for main-tube filter positions 1
