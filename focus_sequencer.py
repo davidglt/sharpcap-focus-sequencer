@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# Created: 2026-08-25
+# Author: David González López-Tercero <davidglt@dragonit.es>
 # SPDX-FileCopyrightText: 2026 David González López-Tercero <davidglt@dragonit.es>
 # SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -138,6 +140,7 @@ class SequencerConfig:
     filters: dict[int, FilterDefinition]
 
     def get_filter(self, position: int) -> FilterDefinition:
+        """Return the configured filter or raise an error for an unknown slot."""
         try:
             return self.filters[position]
         except KeyError as exc:
@@ -157,6 +160,7 @@ class ActiveFilter:
 
     @property
     def label(self) -> str:
+        """Return a concise human-readable label for the active filter."""
         if self.position is None:
             return self.name
         return f"{self.position} ({self.name})"
@@ -1001,6 +1005,7 @@ def main() -> int:
 
 
 def _run_cycle(args: argparse.Namespace, log: logging.Logger) -> int:
+    """Validate inputs, calculate the target, and perform one focus cycle."""
     focuser = None
 
     try:

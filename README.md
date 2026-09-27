@@ -292,6 +292,13 @@ corrections accurately:
 The analyzer can report temperature, TCF, requested correction, backlash,
 positions before and after, and exit reason separately for the C8 and 50ED.
 
+## Author
+
+David González López-Tercero
+
 ## License
 
-GPL-3.0-or-later. See `LICENSE.txt`.
+Copyright © 2026 David González López-Tercero.
+
+This project is licensed under the GNU General Public License v3.0 or later
+(GPL-3.0-or-later). See [LICENSE.txt](LICENSE.txt) for the full text.
